@@ -59,8 +59,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                     let (logo, _) = ui.allocate_exact_size(Vec2::splat(72.0), egui::Sense::hover());
                     theme::logo(ui, logo.center(), 72.0, palette.accent, palette.on_accent);
                     ui.add_space(6.0);
-                    theme::text(ui, "Spotifast", theme::bold(30.0), palette.text);
-                    theme::text(ui, "A native Spotify client.", theme::regular(14.5), palette.secondary);
+                    theme::text(ui, "Spotidark", theme::bold(30.0), palette.text);
+                    theme::text(
+                        ui,
+                        "A Darkroom Engineering native Spotify client.",
+                        theme::regular(14.5),
+                        palette.secondary,
+                    );
                     ui.add_space(22.0);
                     match &app.auth {
                         AuthStatus::WaitingForBrowser { url } => {
@@ -120,7 +125,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                             ui.add_space(10.0);
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new("Sign in through your browser. Spotifast never sees your password. Local playback needs Spotify Premium.")
+                                    egui::RichText::new("Sign in through your browser. Spotidark never sees your password. Local playback needs Spotify Premium.")
                                         .font(theme::regular(12.5))
                                         .color(palette.secondary),
                                 )
@@ -170,13 +175,31 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                     ui.data_mut(|data| data.insert_temp(proxy_id, proxy_open));
                         });
                 });
-            ui.painter().text(
-                pos2(rect.center().x, rect.bottom() - 24.0),
-                egui::Align2::CENTER_BOTTOM,
-                format!("Spotifast {} • not affiliated with Spotify", env!("CARGO_PKG_VERSION")),
-                theme::regular(11.5),
-                palette.dim,
+            let credit = format!(
+                "Spotidark {} • Based on Spotifast by Carmine Paolino and contributors • Not affiliated with Spotify",
+                env!("CARGO_PKG_VERSION")
             );
+            let font = theme::regular(11.5);
+            let credit_width = ui
+                .painter()
+                .layout_no_wrap(credit.clone(), font.clone(), palette.dim)
+                .size()
+                .x;
+            let footer = Rect::from_min_max(
+                pos2(rect.left(), rect.bottom() - 36.0),
+                pos2(rect.right(), rect.bottom() - 12.0),
+            );
+            let mut footer_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(footer)
+                    .layout(Layout::left_to_right(Align::Center)),
+            );
+            footer_ui.add_space((footer.width() - credit_width).max(0.0) / 2.0);
+            if theme::link(&mut footer_ui, credit, font, palette.dim).clicked() {
+                ctx.open_url(egui::OpenUrl::new_tab(
+                    "https://github.com/crmne/spotifast",
+                ));
+            }
         });
 }
 

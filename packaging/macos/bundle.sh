@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build Spotifast.app from a GUI binary, on a macOS machine.
+# Build Spotidark.app from a GUI binary, on a macOS machine.
 #
 #   packaging/macos/bundle.sh <binary> <output.app> <version>
 #
@@ -20,6 +20,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp "$binary" "$app/Contents/MacOS/fastpotify"
 chmod 755 "$app/Contents/MacOS/fastpotify"
+cp "$here/../../LICENSE" "$app/Contents/Resources/LICENSE"
 # The build number has to be numbers: a release candidate's -rc1 comes off.
 build="${version%%-*}"
 sed -e "s/__VERSION__/$version/g" -e "s/__BUILD__/$build/g" "$here/Info.plist" \
@@ -30,9 +31,9 @@ mkdir -p "$iconset"
 # iconutil reads only these base sizes, each with an optional @2x. It ignores
 # an icon_64x64 without saying so, so generating one is two wasted sips calls.
 for size in 16 32 128 256 512; do
-    sips -z $size $size "$here/icon-1024.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    sips -z $size $size "$here/spotidark-1024.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
     double=$((size * 2))
-    sips -z $double $double "$here/icon-1024.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+    sips -z $double $double "$here/spotidark-1024.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/fastpotify.icns"
 

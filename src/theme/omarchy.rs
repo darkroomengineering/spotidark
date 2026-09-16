@@ -22,7 +22,7 @@ impl Setup {
             assets: executable
                 .parent()?
                 .parent()?
-                .join("share/spotifast/omarchy"),
+                .join("share/spotidark/omarchy"),
             home: directories::BaseDirs::new()?.home_dir().to_path_buf(),
         })
     }
@@ -44,12 +44,12 @@ impl Setup {
         if !self.available() {
             return Ok(());
         }
-        let template = read_small(&self.assets.join("spotifast.json.tpl"))?;
-        let hook = read_small(&self.assets.join("spotifast-theme"))?;
-        let template_path = config.join("themed/spotifast.json.tpl");
+        let template = read_small(&self.assets.join("spotidark.json.tpl"))?;
+        let hook = read_small(&self.assets.join("spotidark-theme"))?;
+        let template_path = config.join("themed/spotidark.json.tpl");
         create_only(&template_path, template.as_bytes(), 0o644)?;
         create_only(
-            &config.join("hooks/theme-set.d/spotifast-theme"),
+            &config.join("hooks/theme-set.d/spotidark-theme"),
             hook.as_bytes(),
             0o755,
         )?;
@@ -60,7 +60,7 @@ impl Setup {
         }
         // Seed the current palette without reapplying the desktop theme.
         // Future changes use Omarchy's own template renderer and installed hook.
-        let rendered = current.join("spotifast.json");
+        let rendered = current.join("spotidark.json");
         let palette = if rendered.is_file() {
             read_small(&rendered)?
         } else {
@@ -101,7 +101,7 @@ fn create_only(destination: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("missing parent"))?;
     fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".spotifast-setup-{:016x}", rand::random::<u64>()));
+    let temporary = parent.join(format!(".spotidark-setup-{:016x}", rand::random::<u64>()));
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -179,15 +179,15 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
-    const TEMPLATE: &str = include_str!("../../contrib/omarchy/spotifast.json.tpl");
-    const HOOK: &str = include_str!("../../contrib/omarchy/spotifast-theme");
+    const TEMPLATE: &str = include_str!("../../contrib/omarchy/spotidark.json.tpl");
+    const HOOK: &str = include_str!("../../contrib/omarchy/spotidark-theme");
 
     struct Scratch(PathBuf);
 
     impl Scratch {
         fn new() -> Self {
             let path = std::env::temp_dir()
-                .join(format!("spotifast omarchy setup {}", rand::random::<u64>()));
+                .join(format!("spotidark omarchy setup {}", rand::random::<u64>()));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -226,7 +226,7 @@ mod tests {
     fn setup_requires_both_a_package_and_an_omarchy_desktop() {
         let root = Scratch::new();
         let setup = Setup {
-            assets: root.0.join("package/share/spotifast/omarchy"),
+            assets: root.0.join("package/share/spotidark/omarchy"),
             home: root.0.join("user"),
         };
         let themes = root.0.join("profile/themes");
@@ -242,7 +242,7 @@ mod tests {
     fn setup_is_per_user_and_preserves_customizations_and_preferences() {
         let root = Scratch::new();
         let setup = Setup {
-            assets: root.0.join("package/share/spotifast/omarchy"),
+            assets: root.0.join("package/share/spotidark/omarchy"),
             home: root.0.join("user"),
         };
         let config = setup.home.join(".config/omarchy");
@@ -251,14 +251,14 @@ mod tests {
         for path in [&setup.assets, &config, &current, &themes] {
             fs::create_dir_all(path).unwrap();
         }
-        fs::write(setup.assets.join("spotifast.json.tpl"), TEMPLATE).unwrap();
-        fs::write(setup.assets.join("spotifast-theme"), HOOK).unwrap();
-        fs::write(current.join("spotifast.json"), "{}").unwrap();
+        fs::write(setup.assets.join("spotidark.json.tpl"), TEMPLATE).unwrap();
+        fs::write(setup.assets.join("spotidark-theme"), HOOK).unwrap();
+        fs::write(current.join("spotidark.json"), "{}").unwrap();
         let settings = themes.parent().unwrap().join("settings.json");
         fs::write(&settings, "existing preferences").unwrap();
         setup.install(&themes).unwrap();
-        let template = config.join("themed/spotifast.json.tpl");
-        let hook = config.join("hooks/theme-set.d/spotifast-theme");
+        let template = config.join("themed/spotidark.json.tpl");
+        let hook = config.join("hooks/theme-set.d/spotidark-theme");
         assert_eq!(fs::read_to_string(&template).unwrap(), TEMPLATE);
         assert_eq!(fs::read_to_string(&hook).unwrap(), HOOK);
         assert_ne!(fs::metadata(&hook).unwrap().permissions().mode() & 0o100, 0);

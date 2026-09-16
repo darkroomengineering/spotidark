@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const COMMANDS: [(&str, &str); 2] = [
+const COMMANDS: [(&str, &str); 3] = [
+    ("spotidark", env!("CARGO_BIN_EXE_spotidark")),
     ("spotifast", env!("CARGO_BIN_EXE_spotifast")),
     ("fastpotify", env!("CARGO_BIN_EXE_fastpotify")),
 ];
@@ -24,7 +25,7 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn both_commands_report_their_name_and_pass_the_update_version_check() {
+fn all_commands_report_their_name_and_pass_the_update_version_check() {
     for (name, binary) in COMMANDS {
         let output = Command::new(binary).arg("--version").output().unwrap();
         assert!(output.status.success());
@@ -79,12 +80,12 @@ fn existing_preferences_and_custom_connect_names_survive_the_rename() {
         saved.save(&path);
         assert_eq!(Settings::load(&path), saved);
     }
-    assert_eq!(Settings::default().device_name, "Spotifast");
+    assert_eq!(Settings::default().device_name, "Spotidark");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn both_commands_forward_links_to_the_existing_instance_on_a_private_bus() {
+fn all_commands_forward_links_to_the_existing_instance_on_a_private_bus() {
     use fastpotify::single_instance::{ControlCommand, Outcome};
 
     const CHILD: &str = "SPOTIFAST_RENAME_PRIVATE_BUS";
@@ -114,7 +115,7 @@ fn both_commands_forward_links_to_the_existing_instance_on_a_private_bus() {
             .arg(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "both_commands_forward_links_to_the_existing_instance_on_a_private_bus",
+                "all_commands_forward_links_to_the_existing_instance_on_a_private_bus",
                 "--nocapture",
             ])
             .env(CHILD, "1")

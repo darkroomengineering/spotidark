@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Spotidark
+GenericName=Music Player
+Comment=Darkroom Engineering's native Spotify client, based on Spotifast
+Exec=spotidark %u
+Terminal=false
+Categories=AudioVideo;Audio;Player;Music;
+Keywords=spotify;music;player;streaming;spotidark;
+Icon=spotidark
+StartupNotify=true
+StartupWMClass=spotidark
+MimeType=x-scheme-handler/spotify;

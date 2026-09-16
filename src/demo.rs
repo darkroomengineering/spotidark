@@ -506,7 +506,7 @@ pub fn populate(app: &mut App) {
     app.devices = vec![
         Device {
             id: Some("local-demo".into()),
-            name: "Spotifast".into(),
+            name: "Spotidark".into(),
             is_active: false,
             is_restricted: false,
             volume_percent: Some(70),
@@ -671,7 +671,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             "update" => {
                 app.update = Some(crate::updates::Release {
                     version: "0.7.1".into(),
-                    url: "https://spotifast.rocks/download/".into(),
+                    url: "https://github.com/darkroomengineering/spotidark/releases".into(),
                 });
             }
             "personal-app" => app.dialog = Some(Dialog::PersonalAppIntro),

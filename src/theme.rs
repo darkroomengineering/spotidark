@@ -35,21 +35,21 @@ impl Palette {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            window: Color32::from_rgb(0x0f, 0x11, 0x14),
-            panel: Color32::from_rgb(0x15, 0x18, 0x1c),
-            surface: Color32::from_rgb(0x1d, 0x21, 0x27),
-            surface_hover: Color32::from_rgb(0x26, 0x2b, 0x33),
-            surface_active: Color32::from_rgb(0x2f, 0x35, 0x3f),
-            outline: Color32::from_rgb(0x2a, 0x30, 0x38),
-            text: Color32::from_rgb(0xf2, 0xf4, 0xf6),
-            secondary: Color32::from_rgb(0xa9, 0xb1, 0xbc),
-            dim: Color32::from_rgb(0x6e, 0x77, 0x84),
-            accent: Color32::from_rgb(0x1e, 0xd7, 0x60),
-            accent_hover: Color32::from_rgb(0x3c, 0xe8, 0x7a),
-            on_accent: Color32::from_rgb(0x0a, 0x14, 0x0e),
+            window: Color32::from_rgb(0x08, 0x08, 0x08),
+            panel: Color32::from_rgb(0x11, 0x11, 0x11),
+            surface: Color32::from_rgb(0x1a, 0x1a, 0x1a),
+            surface_hover: Color32::from_rgb(0x24, 0x24, 0x24),
+            surface_active: Color32::from_rgb(0x30, 0x30, 0x30),
+            outline: Color32::from_rgb(0x30, 0x30, 0x30),
+            text: Color32::from_rgb(0xf5, 0xf5, 0xf5),
+            secondary: Color32::from_rgb(0xb5, 0xb5, 0xb5),
+            dim: Color32::from_rgb(0x80, 0x80, 0x80),
+            accent: Color32::from_rgb(0xf2, 0xf2, 0xf2),
+            accent_hover: Color32::WHITE,
+            on_accent: Color32::from_rgb(0x0a, 0x0a, 0x0a),
             danger: Color32::from_rgb(0xf5, 0x71, 0x7f),
             warning: Color32::from_rgb(0xf2, 0xb8, 0x5c),
-            overlay: Color32::from_rgb(0x22, 0x27, 0x2e),
+            overlay: Color32::from_rgb(0x16, 0x16, 0x16),
             shadow: Color32::from_black_alpha(140),
         }
     }
@@ -57,17 +57,17 @@ impl Palette {
     pub fn light() -> Self {
         Self {
             dark: false,
-            window: Color32::from_rgb(0xf8, 0xf9, 0xfb),
+            window: Color32::from_rgb(0xf5, 0xf5, 0xf3),
             panel: Color32::from_rgb(0xff, 0xff, 0xff),
-            surface: Color32::from_rgb(0xee, 0xf0, 0xf3),
-            surface_hover: Color32::from_rgb(0xe3, 0xe6, 0xeb),
-            surface_active: Color32::from_rgb(0xd7, 0xdb, 0xe1),
-            outline: Color32::from_rgb(0xdd, 0xe1, 0xe6),
-            text: Color32::from_rgb(0x14, 0x17, 0x1a),
-            secondary: Color32::from_rgb(0x53, 0x5b, 0x66),
-            dim: Color32::from_rgb(0x8b, 0x93, 0x9e),
-            accent: Color32::from_rgb(0x15, 0xa6, 0x4a),
-            accent_hover: Color32::from_rgb(0x12, 0x8f, 0x40),
+            surface: Color32::from_rgb(0xec, 0xec, 0xe9),
+            surface_hover: Color32::from_rgb(0xe2, 0xe2, 0xde),
+            surface_active: Color32::from_rgb(0xd4, 0xd4, 0xcf),
+            outline: Color32::from_rgb(0xd5, 0xd5, 0xd0),
+            text: Color32::from_rgb(0x11, 0x11, 0x11),
+            secondary: Color32::from_rgb(0x56, 0x56, 0x52),
+            dim: Color32::from_rgb(0x70, 0x70, 0x6c),
+            accent: Color32::from_rgb(0x17, 0x17, 0x17),
+            accent_hover: Color32::BLACK,
             on_accent: Color32::WHITE,
             danger: Color32::from_rgb(0xd6, 0x3b, 0x4c),
             warning: Color32::from_rgb(0xb8, 0x7a, 0x14),
@@ -666,7 +666,7 @@ pub fn icon_button(
 /// Horizontal offset that optically centers play triangles.
 ///
 /// Lucide includes a 1/24-width shift; a measured 3% shift centers the icon at
-/// Spotifast's sizes. Use this everywhere instead of per-call adjustments.
+/// Spotidark's sizes. Use this everywhere instead of per-call adjustments.
 pub fn play_glyph_offset(icon: Icon, icon_size: f32) -> Vec2 {
     if matches!(icon, Icon::PlayFilled | Icon::Play) {
         Vec2::new(icon_size * (0.03 - 1.0 / 24.0), 0.0)
@@ -675,18 +675,20 @@ pub fn play_glyph_offset(icon: Icon, icon_size: f32) -> Vec2 {
     }
 }
 
-/// The app's mark, the accent disc with the play triangle, drawn the same
-/// wherever it appears.
+/// The app's mark, drawn with the packaged icon's rounded-square geometry.
 pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32, disc: Color32, glyph: Color32) {
-    ui.painter().circle_filled(center, diameter / 2.0, disc);
-    let icon_size = diameter * 0.45;
-    let icon_rect = egui::Rect::from_center_size(
-        center + play_glyph_offset(Icon::PlayFilled, icon_size),
-        Vec2::splat(icon_size),
-    );
-    Icon::PlayFilled
-        .image(glyph, icon_size)
-        .paint_at(ui, icon_rect);
+    let scale = diameter / 128.0;
+    let background = egui::Rect::from_center_size(center, Vec2::splat(124.0 * scale));
+    ui.painter().rect_filled(background, 28.0 * scale, disc);
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            center + Vec2::new(-14.0, -26.0) * scale,
+            center + Vec2::new(-14.0, 26.0) * scale,
+            center + Vec2::new(30.0, 0.0) * scale,
+        ],
+        glyph,
+        Stroke::NONE,
+    ));
 }
 
 pub fn circle_button(
@@ -1002,7 +1004,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_local_palette_keeps_fastpotifys_widget_style_local() {
+    fn a_local_palette_keeps_spotidarks_widget_style_local() {
         let ctx = egui::Context::default();
         apply(&ctx, &Palette::light());
         let dark = Palette::dark();

@@ -1,4 +1,4 @@
-//! Linux desktop media controls (MPRIS) for Spotifast.
+//! Linux desktop media controls (MPRIS) for Spotidark.
 //!
 //! D-Bus runs on its own thread with a local executor and exchanges bounded
 //! messages with the interface, which stays the only owner of playback
@@ -16,7 +16,7 @@ use crate::media::{MediaCommand, MediaState, MediaTrack};
 use crate::player::{Playback, RepeatMode};
 
 const PLAYING_POSITION_INTERVAL: Duration = Duration::from_millis(1000);
-const TRACK_OBJECT_PATH_PREFIX: &str = "/me/paolino/Fastpotify/Track/";
+const TRACK_OBJECT_PATH_PREFIX: &str = "/engineering/darkroom/spotidark/Track/";
 
 enum Update {
     State(MediaState),
@@ -110,8 +110,8 @@ async fn run(
     commands: Sender<MediaCommand>,
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 ) -> mpris_server::zbus::Result<()> {
-    let player = Player::builder("fastpotify")
-        .identity("Spotifast")
+    let player = Player::builder("spotidark")
+        .identity("Spotidark")
         .desktop_entry(desktop_entry())
         .can_raise(true)
         .can_quit(true)
@@ -326,9 +326,9 @@ fn desktop_entry_for(app_id: Option<&str>, in_flatpak: bool) -> &str {
     if let Some(app_id) = app_id.filter(|id| !id.is_empty()) {
         app_id
     } else if in_flatpak {
-        "rocks.spotifast.Spotifast"
+        "engineering.darkroom.spotidark"
     } else {
-        "spotifast"
+        "spotidark"
     }
 }
 
@@ -338,14 +338,20 @@ mod tests {
 
     #[test]
     fn desktop_entry_matches_the_installed_flatpak_id() {
-        for id in ["rocks.spotifast.Spotifast", "rocks.fastpotify.Fastpotify"] {
+        for id in [
+            "engineering.darkroom.spotidark",
+            "rocks.fastpotify.Fastpotify",
+        ] {
             assert_eq!(desktop_entry_for(Some(id), true), id);
         }
-        assert_eq!(desktop_entry_for(None, false), "spotifast");
-        assert_eq!(desktop_entry_for(None, true), "rocks.spotifast.Spotifast");
+        assert_eq!(desktop_entry_for(None, false), "spotidark");
+        assert_eq!(
+            desktop_entry_for(None, true),
+            "engineering.darkroom.spotidark"
+        );
         assert_eq!(
             desktop_entry_for(Some(""), true),
-            "rocks.spotifast.Spotifast"
+            "engineering.darkroom.spotidark"
         );
     }
 

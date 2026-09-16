@@ -19,8 +19,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{auth::StoredToken, paths::AppDirs};
 
-// This is a credential-store identity, not the product display name.
-const SERVICE: &str = "rocks.fastpotify.Fastpotify";
+// A separate credential-store identity keeps upstream grants untouched.
+const SERVICE: &str = "engineering.darkroom.spotidark";
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -634,6 +634,12 @@ impl Lease {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn fork_uses_its_own_credential_service() {
+        assert_eq!(SERVICE, "engineering.darkroom.spotidark");
+        assert_ne!(SERVICE, "rocks.fastpotify.Fastpotify");
+    }
 
     #[derive(Default)]
     struct Fake {

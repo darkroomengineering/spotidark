@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Spotifast</string>
-    <key>CFBundleDisplayName</key><string>Spotifast</string>
-    <key>CFBundleIdentifier</key><string>me.paolino.fastpotify</string>
+    <key>CFBundleName</key><string>Spotidark</string>
+    <key>CFBundleDisplayName</key><string>Spotidark</string>
+    <key>CFBundleIdentifier</key><string>engineering.darkroom.spotidark</string>
     <key>CFBundleExecutable</key><string>fastpotify</string>
     <key>CFBundleIconFile</key><string>fastpotify</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -18,7 +18,7 @@
     <array>
         <string>_spotify-connect._tcp</string>
     </array>
-    <!-- Spotify links (spotify:track:…) open in Spotifast; src/mac_links.rs
+    <!-- Spotify links (spotify:track:…) open in Spotidark; src/mac_links.rs
          takes them. Launch Services notes this when the app is first opened. -->
     <key>CFBundleURLTypes</key>
     <array>
@@ -31,6 +31,6 @@
             <key>CFBundleTypeRole</key><string>Viewer</string>
         </dict>
     </array>
-    <key>NSHumanReadableCopyright</key><string>MIT License. Not affiliated with Spotify AB.</string>
+    <key>NSHumanReadableCopyright</key><string>Based on Spotifast. Copyright (c) 2026 Carmine Paolino. Spotidark by Darkroom Engineering. MIT License. Not affiliated with Spotify AB.</string>
 </dict>
 </plist>

@@ -30,7 +30,9 @@ impl Source {
     fn release(&self, version: &str) -> String {
         match self {
             Self::GitHub => {
-                format!("https://api.github.com/repos/crmne/spotifast/releases/tags/v{version}")
+                format!(
+                    "https://api.github.com/repos/darkroomengineering/spotidark/releases/tags/v{version}"
+                )
             }
             #[cfg(feature = "demo")]
             Self::Local(base) => format!("{base}/latest.json"),
@@ -58,15 +60,19 @@ impl Source {
                 url.scheme() == "https"
                     && url.username().is_empty()
                     && url.password().is_none()
-                    && matches!(
-                        url.host_str(),
+                    && match url.host_str() {
+                        Some("api.github.com") => url
+                            .path()
+                            .starts_with("/repos/darkroomengineering/spotidark/releases/"),
+                        Some("github.com") => url
+                            .path()
+                            .starts_with("/darkroomengineering/spotidark/releases/"),
                         Some(
-                            "api.github.com"
-                                | "github.com"
-                                | "release-assets.githubusercontent.com"
-                                | "objects.githubusercontent.com"
-                        )
-                    )
+                            "release-assets.githubusercontent.com"
+                            | "objects.githubusercontent.com",
+                        ) => true,
+                        _ => false,
+                    }
             }
             #[cfg(feature = "demo")]
             Self::Local(base) => {
@@ -157,7 +163,7 @@ pub fn download_for(
     let policy = source.clone();
     let http = crate::http::blocking_builder(proxy)
         .map_err(anyhow::Error::msg)?
-        .user_agent(concat!("Spotifast/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Spotidark/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(15 * 60))
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
@@ -209,7 +215,7 @@ pub fn download_for(
                 url.host_str() == Some("github.com")
                     && url.path()
                         == format!(
-                            "/crmne/spotifast/releases/download/v{}/{}",
+                            "/darkroomengineering/spotidark/releases/download/v{}/{}",
                             release.version, candidate.name
                         ),
                 "Update asset does not belong to this release"
@@ -274,16 +280,19 @@ pub fn download_for(
         let payload = if installation.kind == install::Kind::WindowsInstaller {
             archive.clone()
         } else {
-            let canonical = installation
+            let command = installation
                 .executable
                 .file_stem()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("spotifast"));
-            let executable = match (canonical, cfg!(windows)) {
-                (true, true) => "spotifast.exe",
-                (true, false) => "spotifast",
-                (false, true) => "fastpotify.exe",
-                (false, false) => "fastpotify",
+                .unwrap_or("fastpotify")
+                .to_ascii_lowercase();
+            let executable = match (command.as_str(), cfg!(windows)) {
+                ("spotidark", true) => "spotidark.exe",
+                ("spotidark", false) => "spotidark",
+                ("spotifast", true) => "spotifast.exe",
+                ("spotifast", false) => "spotifast",
+                (_, true) => "fastpotify.exe",
+                (_, false) => "fastpotify",
             };
             let payload = directory.join(executable);
             install::extract(&archive, &format!("{stem}/{executable}"), &payload)?;
@@ -458,11 +467,17 @@ mod tests {
             "http://github.com/file",
             "https://github.com.attacker.invalid/file",
             "https://example.com/file",
+            "https://github.com/crmne/spotifast/releases/download/v0.8.0/app.zip",
+            "https://api.github.com/repos/crmne/spotifast/releases/latest",
         ] {
             assert!(!Source::GitHub.allowed(&reqwest::Url::parse(address).unwrap()));
         }
         assert!(Source::GitHub.allowed(
             &reqwest::Url::parse("https://release-assets.githubusercontent.com/file").unwrap()
         ));
+        assert!(Source::GitHub.allowed(&reqwest::Url::parse(&Source::GitHub.latest()).unwrap()));
+        assert!(
+            Source::GitHub.allowed(&reqwest::Url::parse(&Source::GitHub.release("0.8.0")).unwrap())
+        );
     }
 }

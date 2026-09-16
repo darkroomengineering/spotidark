@@ -1,4 +1,4 @@
-// Shared by the Spotifast command and its Fastpotify compatibility command.
+// Shared by the Spotidark command and its Fastpotify compatibility command.
 
 use fastpotify::{app, backend, paths, settings, single_instance, util};
 
@@ -13,7 +13,7 @@ struct Cli {
     control: Option<Control>,
 
     /// A Spotify link to open: spotify:track:…, or an open.spotify.com
-    /// address. The running Spotifast opens it when there is one, which
+    /// address. The running Spotidark opens it when there is one, which
     /// is how the desktop hands links over.
     #[arg(value_name = "LINK")]
     link: Option<String>,
@@ -229,7 +229,7 @@ fn run_control(control: Control) -> i32 {
             0
         }
         Err(error) => {
-            eprintln!("Spotifast is not running or does not support remote control: {error}");
+            eprintln!("Spotidark is not running or does not support remote control: {error}");
             1
         }
     }
@@ -241,21 +241,21 @@ fn run_control(control: Control) -> i32 {
         return match single_instance::reload_themes() {
             Ok(()) => 0,
             Err(error) => {
-                eprintln!("Spotifast is not running or could not reload themes: {error}");
+                eprintln!("Spotidark is not running or could not reload themes: {error}");
                 1
             }
         };
     }
     eprintln!(
         "On Linux the running instance speaks MPRIS instead; use e.g. \
-         `playerctl --player=fastpotify play-pause`."
+         `playerctl --player=spotidark play-pause`."
     );
     2
 }
 
 #[cfg(target_os = "linux")]
 const PULSEAUDIO_PROPERTIES: [(&str, &str); 2] = [
-    ("PULSE_PROP_application.name", "Spotifast"),
+    ("PULSE_PROP_application.name", "Spotidark"),
     ("PULSE_PROP_stream.description", "Spotify playback"),
 ];
 
@@ -352,16 +352,16 @@ pub(crate) fn run() -> eframe::Result<()> {
         std::process::exit(fastpotify::milkdrop::child::run(args));
     }
 
-    // Follow the invoked command, including the Linux package's spotifast
-    // symlink. Old updaters execute a file named fastpotify and require its
-    // original --version output; both commands otherwise start the same app.
+    // Preserve --version for compatibility commands; every command starts
+    // Spotidark with the same isolated storage and controls.
     let name = match arguments
         .first()
         .and_then(|arg| std::path::Path::new(arg).file_stem())
         .and_then(|arg| arg.to_str())
     {
         Some(name) if name.eq_ignore_ascii_case("fastpotify") => "fastpotify",
-        _ => "spotifast",
+        Some(name) if name.eq_ignore_ascii_case("spotifast") => "spotifast",
+        _ => "spotidark",
     };
     let cli = Cli::from_arg_matches(&Cli::command().name(name).get_matches())
         .unwrap_or_else(|error| error.exit());
@@ -383,9 +383,9 @@ pub(crate) fn run() -> eframe::Result<()> {
             }
         });
     let default_filter = if cli.verbose {
-        "info,librespot=info,fastpotify=debug,spotifast=debug"
+        "info,librespot=info,fastpotify=debug,spotifast=debug,spotidark=debug"
     } else {
-        "warn,fastpotify=info,spotifast=info"
+        "warn,fastpotify=info,spotifast=info,spotidark=info"
     };
     let dirs = paths::AppDirs::discover();
     #[cfg(feature = "demo")]
@@ -411,7 +411,7 @@ pub(crate) fn run() -> eframe::Result<()> {
     }
     logger.init();
     log::info!(
-        "Starting Spotifast {} on {} ({})",
+        "Starting Spotidark {} on {} ({})",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
@@ -450,7 +450,7 @@ pub(crate) fn run() -> eframe::Result<()> {
         match single_instance::acquire(&waker, link.as_deref()) {
             single_instance::Outcome::Only(guard) => Some(guard),
             single_instance::Outcome::Surfaced => {
-                log::info!("Spotifast is already running; asked it to show its window");
+                log::info!("Spotidark is already running; asked it to show its window");
                 return Ok(());
             }
         }
@@ -569,7 +569,7 @@ pub(crate) fn run() -> eframe::Result<()> {
         #[cfg(windows)]
         let thumbbar_enabled = desktop_surfaces && options.viewport.taskbar != Some(false);
         eframe::run_native(
-            "Spotifast",
+            "Spotidark",
             options,
             Box::new(move |cc| {
                 if let Some(gl) = &cc.gl {
@@ -799,14 +799,13 @@ fn native_options(
     let persistence_path = mini.as_ref().map(|mini| mini.storage_path.clone());
     #[cfg(target_os = "linux")]
     let persistence_path = persistence_path.or_else(|| {
-        // Window identity now matches spotifast.desktop (or the Flatpak ID),
-        // while the existing geometry and egui state stay at their old path.
-        eframe::storage_dir("fastpotify").map(|dir| dir.join("app.ron"))
+        // Keep window geometry separate from upstream installations too.
+        eframe::storage_dir("spotidark").map(|dir| dir.join("app.ron"))
     });
     #[cfg(target_os = "linux")]
     let app_id = fastpotify::media_controls::desktop_entry();
     #[cfg(not(target_os = "linux"))]
-    let app_id = "fastpotify";
+    let app_id = "engineering.darkroom.spotidark";
     let icon = if cfg!(target_os = "macos") {
         // macOS takes the dock icon from the bundle's .icns, which is the
         // 1024px drawing with the platform's rounding. Setting a window
@@ -816,7 +815,7 @@ fn native_options(
         app_icon()
     };
     let viewport = egui::ViewportBuilder::default()
-        .with_title("Spotifast")
+        .with_title("Spotidark")
         .with_app_id(app_id)
         .with_taskbar(true)
         .with_icon(icon);
@@ -917,12 +916,15 @@ mod native_window_tests {
             assert_eq!(mini.viewport.app_id, main.viewport.app_id);
             assert_eq!(
                 main.persistence_path,
-                eframe::storage_dir("fastpotify").map(|dir| dir.join("app.ron"))
+                eframe::storage_dir("spotidark").map(|dir| dir.join("app.ron"))
             );
         }
         #[cfg(not(target_os = "linux"))]
         {
-            assert_eq!(main.viewport.app_id.as_deref(), Some("fastpotify"));
+            assert_eq!(
+                main.viewport.app_id.as_deref(),
+                Some("engineering.darkroom.spotidark")
+            );
             assert_eq!(mini.viewport.app_id, main.viewport.app_id);
             assert_eq!(main.persistence_path, None);
         }
@@ -1175,7 +1177,9 @@ impl eframe::App for Shell {
                     MenuCommand::Back => Action::Back,
                     MenuCommand::Forward => Action::Forward,
                     MenuCommand::OpenRepo => {
-                        ctx.open_url(egui::OpenUrl::new_tab("https://github.com/crmne/spotifast"));
+                        ctx.open_url(egui::OpenUrl::new_tab(
+                            "https://github.com/darkroomengineering/spotidark",
+                        ));
                         continue;
                     }
                     // Editing goes through egui, which owns the text field

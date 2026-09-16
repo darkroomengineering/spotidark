@@ -26,7 +26,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             spread: 0,
             color: palette.shadow,
         });
-    egui::Window::new("Update Spotifast")
+    egui::Window::new("Update Spotidark")
         .id(egui::Id::new("fastpotify-update"))
         .title_bar(false)
         .resizable(false)
@@ -37,7 +37,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(420.0_f32.min((ctx.content_rect().width() - 64.0).max(240.0)));
             ui.horizontal(|ui| {
-                theme::text(ui, "Update Spotifast", theme::bold(20.0), palette.text);
+                theme::text(ui, "Update Spotidark", theme::bold(20.0), palette.text);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     close |= theme::icon_button(
                         ui,
@@ -101,7 +101,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     ui.add(
                         egui::Label::new(
                             RichText::new(
-                                "Music playing on this computer will stop when Spotifast restarts.",
+                                "Music playing on this computer will stop when Spotidark restarts.",
                             )
                             .font(theme::regular(14.0))
                             .color(palette.secondary),

@@ -137,7 +137,7 @@ jobs:
       # Only a successful main push publishes. PRs and manual branch builds
       # can read the public cache, but never receive its upload credential.
       - name: Publish the Nix package closure
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
+        if: github.repository == 'crmne/spotifast' && github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
         shell: bash
         env:
           CACHIX_CACHE: ${{ vars.CACHIX_CACHE }}

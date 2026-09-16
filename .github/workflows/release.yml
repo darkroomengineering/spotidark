@@ -12,6 +12,7 @@ env:
 
 jobs:
   build:
+    if: github.repository == 'crmne/spotifast'
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     env:
@@ -130,6 +131,7 @@ jobs:
           if-no-files-found: error
 
   macos:
+    if: github.repository == 'crmne/spotifast'
     name: macOS universal app
     runs-on: macos-latest
     env:
@@ -193,6 +195,7 @@ jobs:
   # sandbox packaging/flatpak describes, so nothing compiles twice. Flathub
   # builds from source on its own machines, from the manifest beside it.
   flatpak:
+    if: github.repository == 'crmne/spotifast'
     name: Flatpak bundle
     needs: build
     runs-on: ubuntu-latest
@@ -226,7 +229,7 @@ jobs:
     # The bundle is welcome but not required: a Flatpak failure must not
     # hold the release.
     needs: [build, macos, flatpak]
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.macos.result == 'success' }}
+    if: ${{ github.repository == 'crmne/spotifast' && !cancelled() && needs.build.result == 'success' && needs.macos.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -254,7 +257,7 @@ jobs:
 
   packaging:
     # The optional Flatpak job may fail without blocking native packages.
-    if: ${{ !cancelled() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+    if: ${{ github.repository == 'crmne/spotifast' && !cancelled() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
     needs: publish
     uses: ./.github/workflows/packaging.yml
     with:

@@ -1,4 +1,4 @@
-//! Where Spotifast keeps its files.
+//! Where Spotidark keeps its files.
 //!
 //! Configuration, durable non-secret state, and disposable caches live in the
 //! platform's conventional directories. Spotify grants use the platform store;
@@ -17,8 +17,8 @@ pub struct AppDirs {
 
 impl AppDirs {
     pub fn discover() -> Self {
-        // Keep the established paths so upgrades reuse settings and credentials.
-        let project = ProjectDirs::from("me", "paolino", "fastpotify");
+        // The fork owns separate storage. Never import upstream credentials.
+        let project = ProjectDirs::from("engineering", "darkroom", "spotidark");
         match project {
             Some(project) => Self {
                 config: project.config_dir().to_path_buf(),
@@ -31,9 +31,9 @@ impl AppDirs {
             None => {
                 let fallback = std::env::current_dir().unwrap_or_default();
                 Self {
-                    config: fallback.join("fastpotify-config"),
-                    state: fallback.join("fastpotify-state"),
-                    cache: fallback.join("fastpotify-cache"),
+                    config: fallback.join("spotidark-config"),
+                    state: fallback.join("spotidark-state"),
+                    cache: fallback.join("spotidark-cache"),
                 }
             }
         }
@@ -78,7 +78,7 @@ impl AppDirs {
 
     /// The log of the current run, replaced at every start.
     pub fn log_file(&self) -> PathBuf {
-        self.state.join("fastpotify.log")
+        self.state.join("spotidark.log")
     }
 
     /// Where a panic is recorded before the process dies of it.
@@ -135,5 +135,29 @@ impl AppDirs {
             std::fs::create_dir_all(dir)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fork_storage_does_not_share_upstream_settings_or_grants() {
+        let fork = AppDirs::discover();
+        let upstream = ProjectDirs::from("me", "paolino", "fastpotify").unwrap();
+        let expected = ProjectDirs::from("engineering", "darkroom", "spotidark").unwrap();
+        assert_eq!(fork.config, expected.config_dir());
+        assert_eq!(fork.cache, expected.cache_dir());
+        assert_eq!(
+            fork.state,
+            expected.state_dir().unwrap_or(expected.data_local_dir())
+        );
+        assert_ne!(fork.config, upstream.config_dir());
+        assert_ne!(fork.cache, upstream.cache_dir());
+        assert_ne!(
+            fork.state,
+            upstream.state_dir().unwrap_or(upstream.data_local_dir())
+        );
     }
 }

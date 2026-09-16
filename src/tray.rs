@@ -38,11 +38,11 @@ impl FastTray {
 
 impl ksni::Tray for FastTray {
     fn id(&self) -> String {
-        "fastpotify".into()
+        "spotidark".into()
     }
 
     fn title(&self) -> String {
-        "Spotifast".into()
+        "Spotidark".into()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -69,7 +69,7 @@ impl ksni::Tray for FastTray {
         use ksni::menu::*;
         vec![
             StandardItem {
-                label: "Show or hide Spotifast".into(),
+                label: "Show or hide Spotidark".into(),
                 activate: Box::new(|tray: &mut Self| tray.send(TrayCommand::ShowHide)),
                 ..Default::default()
             }
@@ -267,7 +267,7 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD, "1")
-            .env("FLATPAK_ID", "rocks.spotifast.Spotifast")
+            .env("FLATPAK_ID", "engineering.darkroom.spotidark")
             .env("DBUS_SESSION_BUS_ADDRESS", address.trim())
             .status();
         let _ = bus.kill();

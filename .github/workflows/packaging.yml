@@ -37,6 +37,7 @@ permissions:
 
 jobs:
   packaging:
+    if: github.repository == 'crmne/spotifast'
     permissions:
       contents: write
     uses: crmne/native-packages/.github/workflows/package.yml@f002ce91c1180528734538fa47d235d387fd351f # v0.6.0
@@ -49,6 +50,7 @@ jobs:
     secrets: inherit
 
   installation:
+    if: github.repository == 'crmne/spotifast'
     name: Install (${{ matrix.os }}, ${{ matrix.image }})
     needs: packaging
     runs-on: ${{ matrix.os }}

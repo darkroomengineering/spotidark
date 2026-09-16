@@ -1,19 +1,23 @@
 [package]
 # Keep the Cargo package identity for existing cargo-install users.
 name = "fastpotify"
-default-run = "spotifast"
+default-run = "spotidark"
 version = "0.8.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
 description = "A native Spotify client"
-repository = "https://github.com/crmne/spotifast"
+repository = "https://github.com/darkroomengineering/spotidark"
 keywords = ["spotify", "music", "egui", "librespot", "player"]
 categories = ["multimedia::audio"]
 
 [lib]
 name = "fastpotify"
 path = "src/lib.rs"
+
+[[bin]]
+name = "spotidark"
+path = "src/spotidark.rs"
 
 [[bin]]
 name = "spotifast"

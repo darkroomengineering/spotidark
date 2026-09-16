@@ -310,7 +310,7 @@ impl Catalog {
             Err(error) => {
                 log::warn!("unable to start the theme loader: {error}");
                 self.problem = Some(
-                    "Custom themes could not be loaded. Run spotifast reload-themes to try again."
+                    "Custom themes could not be loaded. Run spotidark reload-themes to try again."
                         .into(),
                 );
             }
@@ -385,7 +385,7 @@ impl Catalog {
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.problem = Some(
-                    "Custom themes could not be loaded. Run spotifast reload-themes to try again."
+                    "Custom themes could not be loaded. Run spotidark reload-themes to try again."
                         .into(),
                 );
             }
@@ -478,7 +478,7 @@ mod custom_theme_tests {
     #[test]
     fn reloads_coalesce_and_never_publish_a_superseded_palette() {
         let dir =
-            std::env::temp_dir().join(format!("spotifast-theme-reload-{}", rand::random::<u64>()));
+            std::env::temp_dir().join(format!("spotidark-theme-reload-{}", rand::random::<u64>()));
         std::fs::create_dir(&dir).unwrap();
         std::fs::write(dir.join("latest.json"), br#"{"base":"light"}"#).unwrap();
         let accepted = CustomTheme {

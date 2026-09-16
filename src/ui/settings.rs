@@ -314,8 +314,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         RowText::new("Autoplay", "Keep playing similar songs when your music ends."),
         RowText::new("Gapless playback", "Play tracks without silence between them."),
         RowText::new("Keep music playing when the window closes", super::keys::platform_shortcut(
-                    "Spotifast hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
-                    "Spotifast hides to the system tray. Quit from the tray menu or with Cmd+Q.",
+                    "Spotidark hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
+                    "Spotidark hides to the system tray. Quit from the tray menu or with Cmd+Q.",
                 )),
         RowText::new("Automatic update checks", "Checks GitHub once a day. No personal data is sent."),
         RowText::new("Audio output", "PulseAudio also covers PipeWire. Rodio talks to ALSA directly.").when(cfg!(target_os = "linux")),
@@ -1010,7 +1010,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if skins_rows[1].matches(&needle, "Winamp skins")
                 || skins_rows[5].matches(&needle, "Winamp skins")
             {
-                let mut options: Vec<(usize, &str)> = vec![(0, "Spotifast")];
+                let mut options: Vec<(usize, &str)> = vec![(0, "Spotidark")];
                 options.extend(
                     choices
                         .iter()
@@ -1116,7 +1116,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         RowText::new(
             "Presets",
             format!(
-                "{} in {}. Add .milk files here. Spotifast downloads presets when MilkDrop first opens with an empty folder.",
+                "{} in {}. Add .milk files here. Spotidark downloads presets when MilkDrop first opens with an empty folder.",
                 match count {
                     0 => "None yet".to_string(),
                     1 => "One preset".to_string(),
@@ -1388,8 +1388,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     let about_rows = [
         RowText::new(
-            format!("Spotifast {}", env!("CARGO_PKG_VERSION")),
-            "Built with Rust, egui, and librespot. Not affiliated with Spotify.",
+            format!("Spotidark {}", env!("CARGO_PKG_VERSION")),
+            "Built with Rust, egui, and librespot. Based on Spotifast by Carmine Paolino and contributors. Not affiliated with Spotify.",
         ),
         RowText::new(
             "Check for updates Checking…",
@@ -1405,7 +1405,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui.vertical(|ui| {
                     theme::text(
                         ui,
-                        format!("Spotifast {}", env!("CARGO_PKG_VERSION")),
+                        format!("Spotidark {}", env!("CARGO_PKG_VERSION")),
                         theme::semibold(15.0),
                         palette.text,
                     );
@@ -1415,6 +1415,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         theme::regular(13.0),
                         palette.secondary,
                     );
+                    if theme::link(
+                        ui,
+                        "Based on Spotifast by Carmine Paolino and contributors.",
+                        theme::regular(13.0),
+                        palette.secondary,
+                    )
+                    .clicked()
+                    {
+                        ui.ctx()
+                            .open_url(egui::OpenUrl::new_tab("https://github.com/crmne/spotifast"));
+                    }
                 });
             });
             ui.add_space(8.0);

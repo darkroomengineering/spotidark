@@ -36,7 +36,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     theme::text(ui, "Spend less time waiting for Spotify", theme::bold(20.0), palette.text);
                     ui.add_space(12.0);
                     for text in [
-                        "Spotifast's default connection shares Spotify's request limit with other listeners. When it gets busy, loading music and using playback controls can take longer.",
+                        "Spotidark's default connection shares Spotify's request limit with other listeners. When it gets busy, loading music and using playback controls can take longer.",
                         "Your Premium account lets you create a free personal Spotify app. Connect it here to give supported requests your own allowance. Some pages still use the shared connection.",
                         "Setup takes a few minutes. You can also find it later in Settings under Personal Spotify app.",
                     ] {
@@ -201,7 +201,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         egui::Label::new(
                             egui::RichText::new(
                                 "Playback needs Spotify Premium. Free accounts can browse \
-                                 and search, but cannot play music through Spotifast.",
+                                 and search, but cannot play music through Spotidark.",
                             )
                             .font(theme::regular(14.0))
                             .color(palette.secondary),

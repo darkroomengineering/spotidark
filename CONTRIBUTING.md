@@ -1,4 +1,11 @@
-# Contributing to Spotifast
+# Contributing to Spotidark
+
+This is Darkroom Engineering's fork of Spotifast. Submit fork-specific issues
+and changes to [darkroomengineering/spotidark](https://github.com/darkroomengineering/spotidark).
+The product boundaries, engineering guidance, and checks below are preserved
+from Spotifast and apply to this fork. References to Spotifast describe the
+upstream project; see [README.md](README.md) for Spotidark's identity and current
+distribution status. Credit upstream contributors and preserve the MIT notice.
 
 Spotifast is a native Spotify client. Changes should improve the
 desktop app without adding a browser, fallback services, or another backend.

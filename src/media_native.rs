@@ -112,8 +112,8 @@ impl Bridge {
         wake: Wake,
     ) -> Result<Self, String> {
         let mut controls = MediaControls::new(PlatformConfig {
-            display_name: "Spotifast",
-            dbus_name: "fastpotify",
+            display_name: "Spotidark",
+            dbus_name: "spotidark",
             hwnd,
         })
         .map_err(|error| error.to_string())?;
@@ -235,8 +235,8 @@ mod host {
 
     /// A window that is never shown, for the controls to belong to.
     fn create_hidden_window() -> Result<HWND, String> {
-        let class_name = wide("FastpotifyMediaControls");
-        let title = wide("Spotifast");
+        let class_name = wide("SpotidarkMediaControls");
+        let title = wide("Spotidark");
         let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
         let class = WNDCLASSW {
             style: 0,

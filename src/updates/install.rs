@@ -252,7 +252,8 @@ pub fn verify_version(executable: &Path, expected: &str) -> Result<()> {
                 .read_to_string(&mut version)?;
             ensure!(
                 version.trim() == format!("fastpotify {expected}")
-                    || version.trim() == format!("spotifast {expected}"),
+                    || version.trim() == format!("spotifast {expected}")
+                    || version.trim() == format!("spotidark {expected}"),
                 "The downloaded app has the wrong version"
             );
             return Ok(());

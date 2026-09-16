@@ -24,7 +24,8 @@ pub enum DownloadState {
     Failed(String),
 }
 
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/crmne/spotifast/releases/latest";
+const LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/darkroomengineering/spotidark/releases/latest";
 
 /// Update-check interval.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -52,11 +53,16 @@ pub async fn newer_release_from(
     http: &reqwest::Client,
     source: &Source,
 ) -> Result<Option<Release>> {
-    let latest: LatestRelease = http
+    let response = http
         .get(source.latest())
         .header("Accept", "application/vnd.github+json")
         .send()
-        .await?
+        .await?;
+    // GitHub returns 404 until the fork publishes its first stable release.
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let latest: LatestRelease = response
         .error_for_status()?
         .json()
         .await
@@ -98,6 +104,51 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "demo")]
+    #[tokio::test]
+    async fn an_unreleased_fork_has_no_update() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let source = Source::local(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let mut received = 0;
+            while !request[..received]
+                .windows(4)
+                .any(|part| part == b"\r\n\r\n")
+            {
+                assert!(
+                    received < request.len(),
+                    "request headers exceed fixture limit"
+                );
+                let count = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    stream.read(&mut request[received..]),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(count > 0, "request ended before its headers");
+                received += count;
+            }
+            assert!(request[..received].starts_with(b"GET /latest.json HTTP/1.1\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        assert_eq!(newer_release_from(&http, &source).await.unwrap(), None);
+        server.await.unwrap();
+    }
 
     #[test]
     fn versions_compare_numerically() {

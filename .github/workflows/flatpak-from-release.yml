@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   flatpak:
+    if: github.repository == 'crmne/spotifast'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     container:

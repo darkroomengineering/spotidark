@@ -126,16 +126,14 @@ pub fn open_spotify_url(uri: &str) -> Option<String> {
     Some(format!("https://open.spotify.com/{kind}/{id}"))
 }
 
-/// The application icon, drawn at runtime: a green disc with a play mark.
-/// Shared by the window icon and the tray pixmap.
-/// The menu-bar shape for macOS: the circle with the play triangle punched
+/// The menu-bar shape for macOS: the rounded square with the play triangle punched
 /// out. macOS template images use only the alpha channel and paint the
 /// shape themselves, black in a light menu bar and white in a dark one.
 pub fn tray_template_rgba(size: usize) -> Vec<u8> {
     let mut rgba = app_icon_rgba(size);
     for pixel in rgba.as_chunks_mut::<4>().0 {
-        // The triangle is the dark colour; make it a hole instead.
-        if pixel[1] < 128 {
+        // The triangle is ivory; make it a hole instead.
+        if pixel[1] > 128 {
             pixel[3] = 0;
         }
         pixel[0] = 0;
@@ -152,12 +150,13 @@ pub fn tray_template_rgba(size: usize) -> Vec<u8> {
 pub fn app_icon_rgba(size: usize) -> Vec<u8> {
     let mut rgba = vec![0u8; size * size * 4];
     let center = size as f32 / 2.0;
-    let radius = center - 2.0;
     let scale = size as f32 / 128.0;
+    let radius = 28.0 * scale;
+    let straight = 34.0 * scale;
     let triangle = [
-        (center - 12.0 * scale, center - 22.0 * scale),
-        (center - 12.0 * scale, center + 22.0 * scale),
-        (center + 26.0 * scale, center),
+        (50.0 * scale, 38.0 * scale),
+        (50.0 * scale, 90.0 * scale),
+        (94.0 * scale, 64.0 * scale),
     ];
     let sign = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
         (a.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (a.1 - c.1)
@@ -165,7 +164,9 @@ pub fn app_icon_rgba(size: usize) -> Vec<u8> {
     for y in 0..size {
         for x in 0..size {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let distance = ((px - center).powi(2) + (py - center).powi(2)).sqrt();
+            let dx = ((px - center).abs() - straight).max(0.0);
+            let dy = ((py - center).abs() - straight).max(0.0);
+            let distance = (dx * dx + dy * dy).sqrt();
             let coverage = (radius - distance + 0.5).clamp(0.0, 1.0);
             if coverage <= 0.0 {
                 continue;
@@ -176,7 +177,11 @@ pub fn app_icon_rgba(size: usize) -> Vec<u8> {
             let negative = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
             let positive = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
             let inside = !(negative && positive);
-            let (r, g, b) = if inside { (10, 20, 14) } else { (30, 215, 96) };
+            let (r, g, b) = if inside {
+                (245, 245, 240)
+            } else {
+                (17, 17, 17)
+            };
             let index = (y * size + x) * 4;
             rgba[index] = r;
             rgba[index + 1] = g;

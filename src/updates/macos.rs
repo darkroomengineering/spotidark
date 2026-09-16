@@ -6,7 +6,7 @@ use anyhow::{Context, Result, ensure};
 
 use super::install::{self, Installation, Prepared};
 
-const IDENTIFIER: &str = "me.paolino.fastpotify";
+const IDENTIFIER: &str = "engineering.darkroom.spotidark";
 
 pub(super) fn bundle_root(executable: &Path) -> Result<&Path> {
     let root = executable
@@ -35,7 +35,7 @@ fn identity(bundle: &Path) -> Result<()> {
         plist(bundle, "CFBundleIdentifier")? == IDENTIFIER
             && plist(bundle, "CFBundleExecutable")? == "fastpotify"
             && plist(bundle, "CFBundlePackageType")? == "APPL",
-        "The download is not a Spotifast app bundle"
+        "The download is not a Spotidark app bundle"
     );
     Ok(())
 }
@@ -56,7 +56,7 @@ pub(super) fn detect(executable: &Path) -> Result<()> {
     ];
     for prefix in prefixes.into_iter().flatten() {
         ensure!(
-            !["fastpotify", "spotifast"]
+            !["spotidark", "fastpotify", "spotifast"]
                 .iter()
                 .any(|name| cask_owns(&prefix.join("Caskroom").join(name), bundle)),
             "Update this installation with Homebrew."
@@ -71,13 +71,15 @@ fn cask_owns(cask: &Path, bundle: &Path) -> bool {
     };
     fs::read_dir(cask).is_ok_and(|versions| {
         versions.flatten().any(|version| {
-            ["Spotifast.app", "Fastpotify.app"].iter().any(|name| {
-                version
-                    .path()
-                    .join(name)
-                    .canonicalize()
-                    .is_ok_and(|installed| installed == bundle)
-            })
+            ["Spotidark.app", "Spotifast.app", "Fastpotify.app"]
+                .iter()
+                .any(|name| {
+                    version
+                        .path()
+                        .join(name)
+                        .canonicalize()
+                        .is_ok_and(|installed| installed == bundle)
+                })
         })
     })
 }
@@ -164,7 +166,7 @@ impl Mounted {
 }
 
 fn image_bundle(root: &Path) -> Result<PathBuf> {
-    for name in ["Spotifast.app", "Fastpotify.app"] {
+    for name in ["Spotidark.app", "Spotifast.app", "Fastpotify.app"] {
         let bundle = root.join(name);
         match fs::symlink_metadata(&bundle) {
             Ok(metadata) => {
@@ -178,7 +180,7 @@ fn image_bundle(root: &Path) -> Result<PathBuf> {
             Err(error) => return Err(error.into()),
         }
     }
-    anyhow::bail!("The disk image has no Spotifast app bundle")
+    anyhow::bail!("The disk image has no Spotidark app bundle")
 }
 
 impl Drop for Mounted {
@@ -206,7 +208,7 @@ pub(super) fn validate_download(
 pub(super) fn replace(prepared: &Prepared) -> Result<()> {
     let target = bundle_root(&prepared.installation.executable)?;
     let backup = prepared.directory.join("previous");
-    let candidate = prepared.directory.join("Spotifast.app");
+    let candidate = prepared.directory.join("Spotidark.app");
     ensure!(
         !backup.exists() && !candidate.exists(),
         "This update was already applied"
@@ -261,6 +263,10 @@ mod tests {
         let app = root.join("Spotifast.app");
         fs::create_dir(&app).unwrap();
         assert_eq!(image_bundle(&root).unwrap(), app);
+        let fork = root.join("Spotidark.app");
+        fs::create_dir(&fork).unwrap();
+        assert_eq!(image_bundle(&root).unwrap(), fork);
+        fs::remove_dir(&fork).unwrap();
         fs::remove_dir(&app).unwrap();
         std::os::unix::fs::symlink(&legacy, &app).unwrap();
         assert!(
@@ -274,7 +280,7 @@ mod tests {
     fn homebrew_ownership_survives_the_bundle_rename() {
         let root =
             std::env::temp_dir().join(format!("spotifast-cask-test-{}", rand::random::<u64>()));
-        for name in ["Fastpotify.app", "Spotifast.app"] {
+        for name in ["Spotidark.app", "Fastpotify.app", "Spotifast.app"] {
             let installed = root.join("Applications").join(name);
             let version = root.join("Caskroom/fastpotify/0.8.0");
             fs::create_dir_all(&installed).unwrap();
