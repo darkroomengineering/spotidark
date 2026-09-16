@@ -1,265 +1,544 @@
-name: Release
+name: Release desktop apps
 
+# Every successful push CI run on current main publishes one immutable release.
+# Manual runs build the same two installers for review but never publish them.
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  actions: read
+  contents: read
+
+concurrency:
+  group: spotidark-release-${{ github.event_name == 'workflow_run' && 'publication' || github.run_id }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    if: github.repository == 'crmne/spotifast'
-    name: build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    env:
-      CMAKE_GENERATOR: Ninja
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Match the native packages' declared glibc 2.39 baseline.
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          # A native arm64 runner, so the GUI's system libraries need no
-          # cross-compilation sysroot.
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          # Cross-compiled from x64: the MSVC arm64 linker ships with the
-          # runner's Visual Studio. projectm-sys only knows how to build
-          # libprojectM for x64 there, so this build goes without MilkDrop.
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-            features: --no-default-features
+  identity:
+    name: Validate release identity
+    if: >-
+      github.repository == 'darkroomengineering/spotidark' &&
+      ((github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' ||
+      github.event.workflow_run.event == 'workflow_dispatch') &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      sha: ${{ steps.release.outputs.sha }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
     steps:
+      - name: Resolve tested revision
+        id: revision
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            echo "sha=$TESTED_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
-      # The repository pins its toolchain; add the cross-target's standard
-      # library to the toolchain the pin actually resolves to.
-      - run: rustup target add ${{ matrix.target }}
-      - name: GUI build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpulse-dev libxkbcommon-dev \
-            libwayland-dev libgl1-mesa-dev cmake libclang-dev
-      # libprojectM reads OpenGL through GLEW on Windows; projectm-sys builds
-      # against vcpkg's static-CRT triplet, matching .cargo/config.toml.
-      - name: GLEW for libprojectM
-        if: runner.os == 'Windows' && matrix.features == ''
-        run: vcpkg install glew:x64-windows-static
-      # projectm-sys asks CMake for the Visual Studio generator, which the
-      # runner image no longer satisfies; Ninja inside the MSVC environment
-      # builds the same thing without caring which Visual Studio is on. Both
-      # Windows jobs also use dumpbin below to inspect the finished binary.
-      - name: MSVC environment
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-      - uses: Swatinem/rust-cache@v2
+          ref: ${{ steps.revision.outputs.sha }}
+          persist-credentials: false
+
+      - name: Verify CI provenance and current main
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ steps.revision.outputs.sha }}
         with:
-          # v2: caches from before the projectm-sys fork replay its stale
-          # build output instead of compiling the fork.
-          prefix-key: v2
-          key: ${{ matrix.target }}
+          script: |
+            const target = process.env.TARGET_SHA;
+            if (!/^[0-9a-f]{40}$/.test(target)) {
+              core.setFailed(`Release SHA is not canonical: ${target}`);
+              return;
+            }
 
-      - run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
+            if (context.eventName === 'workflow_run') {
+              const upstream = context.payload.workflow_run;
+              const run = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: upstream.id,
+              });
+              const workflow = await github.rest.actions.getWorkflow({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: upstream.workflow_id,
+              });
+              if (run.data.conclusion !== 'success' ||
+                  !['push', 'workflow_dispatch'].includes(run.data.event) ||
+                  run.data.head_branch !== 'main' || run.data.head_sha !== target ||
+                  workflow.data.name !== 'CI' || workflow.data.path !== '.github/workflows/ci.yml') {
+                core.setFailed('The upstream run is not successful push CI for this exact main commit.');
+                return;
+              }
+              if (run.data.repository.full_name !== `${context.repo.owner}/${context.repo.repo}` ||
+                  run.data.head_repository.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+                core.setFailed('The upstream CI run does not belong to this repository.');
+                return;
+              }
+            } else if (context.ref !== 'refs/heads/main') {
+              core.setFailed('Manual release builds must run from main.');
+              return;
+            }
 
-      # The zip and installer must run on a clean Windows machine without a
-      # separately installed Visual C++ redistributable.
-      - name: Verify standalone Windows runtime
-        if: runner.os == 'Windows'
-        shell: pwsh
+            const main = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/main',
+            });
+            if (main.data.object.sha !== target) {
+              core.setFailed(`Release SHA ${target} is no longer current main ${main.data.object.sha}.`);
+            }
+
+      - name: Derive release version
+        id: release
+        env:
+          TARGET_SHA: ${{ steps.revision.outputs.sha }}
         run: |
-          $binary = "target\${{ matrix.target }}\release\fastpotify.exe"
-          $imports = & dumpbin /dependents $binary | Out-String
-          $runtime = $imports | Select-String -Pattern 'MSVCP[0-9_]*\.dll|VCRUNTIME[0-9_]*\.dll'
-          if ($runtime) { throw "Spotifast imports an MSVC runtime:`n$runtime" }
-
-      - name: Package
-        shell: bash
-        run: |
-          name="fastpotify-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/fastpotify.exe" "target/${{ matrix.target }}/release/spotifast.exe" "dist/$name/"
+          set -euo pipefail
+          version="$(python3 packaging/release.py version "$GITHUB_RUN_NUMBER")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           else
-            cp "target/${{ matrix.target }}/release/fastpotify" "target/${{ matrix.target }}/release/spotifast" "dist/$name/"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo '::notice::Manual runs upload build-only artifacts and never publish a release.'
           fi
-          cp README.md LICENSE "dist/$name/"
-          cp packaging/fastpotify-portable.txt "dist/$name/"
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            # Desktop integration for package builds and hand-installs.
-            cp --parents packaging/applications/spotifast.desktop packaging/icons/spotifast.svg "dist/$name/"
-            cp --parents contrib/omarchy/spotifast.json.tpl contrib/omarchy/spotifast-theme "dist/$name/"
-          fi
-          cd dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "$name.zip" "$name"
-          else
-            tar czf "$name.tar.gz" "$name"
-          fi
-
-      # Inno Setup ships with the runner image. PowerShell, because bash on
-      # Windows rewrites /D... arguments as paths.
-      - name: Installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
-          $arch = "${{ matrix.target }}".Split("-")[0]
-          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
-          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          & $iscc "/DVersion=$version" "/DArch=$arch" `
-            "/DBinary=$PWD\target\${{ matrix.target }}\release\fastpotify.exe" `
-            "/DOutputDir=$PWD\dist" packaging\windows\fastpotify.iss
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*-setup.exe
-          if-no-files-found: error
 
   macos:
-    if: github.repository == 'crmne/spotifast'
-    name: macOS universal app
+    name: macOS universal DMG
+    needs: identity
     runs-on: macos-latest
+    timeout-minutes: 90
     env:
-      # Complete Apple credentials enable native-packages signing/notarization.
-      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      CMAKE_GENERATOR: Ninja
+      VERSION: ${{ needs.identity.outputs.version }}
+      AUTO_PUBLISH: ${{ needs.identity.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.identity.outputs.sha }}
+          persist-credentials: false
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Stamp the ephemeral build version
+        run: |
+          python3 packaging/release.py stamp "$VERSION"
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
       - uses: Swatinem/rust-cache@v2
         with:
-          key: macos-universal
+          key: spotidark-macos-universal
 
-      - name: Build both architectures
+      - name: Select signing mode
+        id: signing
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
+          set -euo pipefail
+          complete=true
+          for name in APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then complete=false; fi
+          done
+          if [ "$complete" = true ]; then
+            echo 'mode=developer-id' >> "$GITHUB_OUTPUT"
+            echo 'artifact_name=spotidark-macos' >> "$GITHUB_OUTPUT"
+          elif [ "$AUTO_PUBLISH" = true ]; then
+            echo 'All six Apple signing and notarization secrets are required for publication.' >&2
+            exit 1
+          else
+            echo 'mode=ad-hoc' >> "$GITHUB_OUTPUT"
+            echo 'artifact_name=spotidark-macos-ad-hoc-dry-run' >> "$GITHUB_OUTPUT"
+            echo '::notice::Apple credentials are incomplete. This build-only DMG is ad-hoc signed and cannot be published.'
+          fi
 
-      - name: Universal binary
+      - name: Import signing certificate
+        if: steps.signing.outputs.mode == 'developer-id'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          mkdir -p universal
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/spotidark-signing.keychain-db"
+          password="$(uuidgen)"
+          echo "::add-mask::$password"
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/spotidark-cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/spotidark-cert.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+
+      - name: Build universal Spotidark app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          SIGNING_MODE: ${{ steps.signing.outputs.mode }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target aarch64-apple-darwin --bin spotidark
+          cargo build --locked --release --target x86_64-apple-darwin --bin spotidark
+          mkdir -p universal payload
           lipo -create \
-            target/aarch64-apple-darwin/release/fastpotify \
-            target/x86_64-apple-darwin/release/fastpotify \
+            target/aarch64-apple-darwin/release/spotidark \
+            target/x86_64-apple-darwin/release/spotidark \
             -output universal/fastpotify
+          if [ "$SIGNING_MODE" = developer-id ]; then
+            export CODESIGN_IDENTITY="$APPLE_SIGNING_IDENTITY"
+          else
+            unset CODESIGN_IDENTITY
+          fi
+          bash packaging/macos/bundle.sh universal/fastpotify payload/Spotidark.app "$VERSION"
+          codesign --verify --deep --strict --verbose=2 payload/Spotidark.app
 
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '4.0'
-      - name: Install native packaging
-        run: gem install native-packages --version 0.6.0 --no-document
-
-      - name: App bundle
+      - name: Notarize and staple app
+        if: steps.signing.outputs.mode == 'developer-id'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          mkdir -p dist/macos-input
-          bash packaging/macos/bundle.sh universal/fastpotify dist/macos-input/Spotifast.app "$version"
-          cp README.md LICENSE dist/macos-input/
+          set -euo pipefail
+          archive="$RUNNER_TEMP/spotidark-app-notary.zip"
+          ditto -c -k --sequesterRsrc --keepParent payload/Spotidark.app "$archive"
+          response="$(xcrun notarytool submit "$archive" --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait --output-format json)"
+          status="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+          request_id="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          if [ "$status" != Accepted ]; then
+            echo "App notarization failed with status: $status" >&2
+            xcrun notarytool log "$request_id" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" || true
+            exit 1
+          fi
+          xcrun stapler staple payload/Spotidark.app
+          xcrun stapler validate payload/Spotidark.app
+          spctl -a -vv --type execute payload/Spotidark.app
 
-      - name: Package, sign and notarize macOS app
+      - name: Create DMG
         run: |
-          native-packages build \
-            --version "${GITHUB_REF_NAME#v}" --target macos-universal --defer-recipes \
-            --output "$RUNNER_TEMP/macos-packages"
-          cp "$RUNNER_TEMP/macos-packages/packages/macos-universal/dmg/"*.dmg dist/
+          mkdir dist
+          ruby packaging/macos/dmg.rb payload dist/spotidark-macos.dmg
+
+      - name: Sign, notarize and assess DMG
+        if: steps.signing.outputs.mode == 'developer-id'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          dmg=dist/spotidark-macos.dmg
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+          response="$(xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait --output-format json)"
+          status="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+          request_id="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          if [ "$status" != Accepted ]; then
+            echo "DMG notarization failed with status: $status" >&2
+            xcrun notarytool log "$request_id" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" || true
+            exit 1
+          fi
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl -a -vv --type open --context context:primary-signature "$dmg"
+
+      - name: Verify macOS artifact
+        run: python3 packaging/release.py verify-assets dist spotidark-macos.dmg
+
+      - name: Cleanup signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/spotidark-signing.keychain-db" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/spotidark-cert.p12" "$RUNNER_TEMP/spotidark-app-notary.zip"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: macos-universal
-          path: dist/*.dmg
+          name: ${{ steps.signing.outputs.artifact_name }}
+          path: dist/spotidark-macos.dmg
           if-no-files-found: error
 
-  # The Linux build packaged as a Flatpak bundle: the same binary, in the
-  # sandbox packaging/flatpak describes, so nothing compiles twice. Flathub
-  # builds from source on its own machines, from the manifest beside it.
-  flatpak:
-    if: github.repository == 'crmne/spotifast'
-    name: Flatpak bundle
-    needs: build
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
-      options: --privileged
+  windows:
+    name: Windows x64 installer
+    needs: identity
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CMAKE_GENERATOR: Ninja
+      VERSION: ${{ needs.identity.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v7
         with:
-          name: x86_64-unknown-linux-gnu
-          path: dist
-      - name: Unpack the Linux build
+          ref: ${{ needs.identity.outputs.sha }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: rustup target add x86_64-pc-windows-msvc
+      - name: Stamp the ephemeral build version
+        shell: bash
         run: |
-          tar xzf dist/fastpotify-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz -C packaging/flatpak
-          mv packaging/flatpak/fastpotify-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu packaging/flatpak/built
-      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+          python3 packaging/release.py stamp "$VERSION"
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+      - name: GLEW for libprojectM
+        run: vcpkg install glew:x64-windows-static
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+      - uses: Swatinem/rust-cache@v2
         with:
-          manifest-path: packaging/flatpak/rocks.spotifast.Spotifast.bundle.yml
-          bundle: spotifast-${{ github.ref_name }}-x86_64.flatpak
-          cache: false
-          upload-artifact: false
+          key: spotidark-windows-x64
+
+      - name: Build Spotidark
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin spotidark
+
+      - name: Verify standalone Windows runtime
+        shell: pwsh
+        run: |
+          $binary = "target\x86_64-pc-windows-msvc\release\spotidark.exe"
+          $imports = & dumpbin /dependents $binary | Out-String
+          $runtime = $imports | Select-String -Pattern 'MSVCP[0-9_]*\.dll|VCRUNTIME[0-9_]*\.dll'
+          if ($runtime) { throw "Spotidark imports an MSVC runtime:`n$runtime" }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=$env:VERSION" "/DArch=x86_64" `
+            "/DBinary=$PWD\target\x86_64-pc-windows-msvc\release\spotidark.exe" `
+            "/DOutputDir=$PWD\dist" packaging\windows\fastpotify.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify Windows artifact
+        shell: bash
+        run: python3 packaging/release.py verify-assets dist spotidark-windows.exe
+
       - uses: actions/upload-artifact@v7
         with:
-          name: flatpak
-          path: "*.flatpak"
+          name: spotidark-windows
+          path: dist/spotidark-windows.exe
           if-no-files-found: error
 
   publish:
-    name: GitHub release
-    # The bundle is welcome but not required: a Flatpak failure must not
-    # hold the release.
-    needs: [build, macos, flatpak]
-    if: ${{ github.repository == 'crmne/spotifast' && !cancelled() && needs.build.result == 'success' && needs.macos.result == 'success' }}
+    name: Publish immutable GitHub release
+    needs: [identity, macos, windows]
+    if: needs.identity.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SHA: ${{ needs.identity.outputs.sha }}
+      RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.identity.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.identity.outputs.sha }}
+          persist-credentials: false
+
       - uses: actions/download-artifact@v7
         with:
+          name: spotidark-macos
           path: dist
-          merge-multiple: true
-      # Include the source package so source distributions can verify it
-      # against the same published checksums as the binaries.
-      - name: Source archive
-        run: |
-          curl --fail --location --retry 3 \
-            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" \
-            --output "dist/spotifast-${GITHUB_REF_NAME}-source.tar.gz"
-      - name: Public filenames, updater compatibility and checksums
-        run: python3 packaging/release-names.py dist "$GITHUB_REF_NAME"
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/download-artifact@v7
         with:
-          files: dist/*
-          name: Spotifast ${{ github.ref_name }}
-          generate_release_notes: true
-          # A tag with a suffix (v0.4.0-rc1) is a pre-release: it stays
-          # off "latest", so the app's update check never offers it.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          name: spotidark-windows
+          path: dist
 
-  packaging:
-    # The optional Flatpak job may fail without blocking native packages.
-    if: ${{ github.repository == 'crmne/spotifast' && !cancelled() && needs.publish.result == 'success' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
-    needs: publish
-    uses: ./.github/workflows/packaging.yml
-    with:
-      version: ${{ github.ref_name }}
-    secrets: inherit
+      - name: Verify publication state
+        id: state
+        uses: actions/github-script@v7
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.sha }}
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+        with:
+          result-encoding: string
+          script: |
+            const main = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/main',
+            });
+            if (main.data.object.sha !== process.env.RELEASE_SHA) {
+              core.setFailed(
+                `Release SHA ${process.env.RELEASE_SHA} is no longer current main ${main.data.object.sha}.`
+              );
+              return '';
+            }
+
+            try {
+              await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: process.env.RELEASE_TAG,
+              });
+              core.setFailed(`Release ${process.env.RELEASE_TAG} already exists and cannot be replaced.`);
+              return '';
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            try {
+              await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${process.env.RELEASE_TAG}`,
+              });
+              core.setFailed(`Tag ${process.env.RELEASE_TAG} already exists and will not be moved.`);
+              return '';
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            try {
+              const latest = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              return latest.data.tag_name;
+            } catch (error) {
+              if (error.status === 404) return '';
+              throw error;
+            }
+
+      - name: Verify release order and assets
+        env:
+          LATEST_TAG: ${{ steps.state.outputs.result }}
+        run: |
+          set -euo pipefail
+          if [ -n "$LATEST_TAG" ]; then
+            python3 packaging/release.py require-newer "$RELEASE_VERSION" "$LATEST_TAG"
+          fi
+          python3 packaging/release.py verify-assets dist spotidark-macos.dmg spotidark-windows.exe
+
+      - name: Upload a private draft
+        run: |
+          set -euo pipefail
+          {
+            echo "Spotidark $RELEASE_VERSION"
+            echo
+            echo "Built from commit $RELEASE_SHA after its successful main-branch CI run."
+            echo
+            echo "Spotidark is based on Spotifast by Carmine Paolino and contributors. The original MIT license and upstream credits are included in both installers."
+          } > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$RELEASE_TAG" \
+            dist/spotidark-macos.dmg \
+            dist/spotidark-windows.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$RELEASE_SHA" \
+            --title "Spotidark $RELEASE_VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --draft
+
+      - name: Verify uploaded bytes and publish current main
+        uses: actions/github-script@v7
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.sha }}
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const { execFileSync } = require('node:child_process');
+            const release = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: process.env.RELEASE_TAG,
+            });
+            if (!release.data.draft || release.data.target_commitish !== process.env.RELEASE_SHA) {
+              throw new Error('Only the draft for this exact tested commit can be published.');
+            }
+            const expected = ['spotidark-macos.dmg', 'spotidark-windows.exe'];
+            const assets = release.data.assets.slice().sort((a, b) => a.name.localeCompare(b.name));
+            if (assets.map(asset => asset.name).join('\n') !== expected.join('\n')) {
+              core.setFailed(
+                `Draft assets must be exactly ${expected.join(', ')}; found ${assets.map(a => a.name).join(', ')}.`
+              );
+              return;
+            }
+            for (const asset of assets) {
+              const path = `dist/${asset.name}`;
+              const hash = crypto.createHash('sha256');
+              for await (const chunk of fs.createReadStream(path)) hash.update(chunk);
+              const digest = `sha256:${hash.digest('hex')}`;
+              if (asset.state !== 'uploaded' || asset.size !== fs.statSync(path).size || asset.digest !== digest) {
+                throw new Error(`GitHub's uploaded bytes do not match the verified ${asset.name}.`);
+              }
+            }
+
+            // Uploads may take minutes. Recheck state after upload, before users
+            // can discover this release or its updater metadata.
+            try {
+              const latest = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner, repo: context.repo.repo,
+              });
+              execFileSync('python3', ['packaging/release.py', 'require-newer',
+                process.env.RELEASE_VERSION, latest.data.tag_name]);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            try {
+              const tag = await github.rest.git.getRef({
+                owner: context.repo.owner, repo: context.repo.repo,
+                ref: `tags/${process.env.RELEASE_TAG}`,
+              });
+              if (tag.data.object.sha !== process.env.RELEASE_SHA) {
+                throw new Error('The release tag does not identify the tested commit.');
+              }
+            } catch (error) {
+              // GitHub can defer creating a draft's tag until publication.
+              if (error.status !== 404) throw error;
+            }
+            const main = await github.rest.git.getRef({
+              owner: context.repo.owner, repo: context.repo.repo, ref: 'heads/main',
+            });
+            if (main.data.object.sha !== process.env.RELEASE_SHA) {
+              throw new Error('Main changed during upload. Keep this draft private.');
+            }
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              release_id: release.data.id, draft: false, make_latest: 'true',
+            });
+
+      - name: Verify published tag
+        run: |
+          set -euo pipefail
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)"
+          test "$tag_sha" = "$RELEASE_SHA"

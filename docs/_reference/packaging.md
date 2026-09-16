@@ -4,6 +4,10 @@ description: Shared packaging automation and application-specific release defini
 nav_order: 20
 ---
 
+For this fork, see [Spotidark releases](../releases.md): successful main CI
+builds a universal macOS DMG and Windows x64 EXE installer, with automatic
+in-app downloads. The remaining page describes preserved upstream packaging.
+
 Spotifast keeps release asset definitions, nFPM configuration and native AUR and
 Homebrew templates in `native-packages.yaml` and `packaging/`. Common automation comes from the pinned
 [native-packages](https://github.com/crmne/native-packages) gem, installed with `gem install native-packages --version 0.6.0`.

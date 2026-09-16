@@ -527,7 +527,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     "Spotidark hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
                     "Spotidark hides to the system tray. Quit from the tray menu or with Cmd+Q.",
                 )),
-        RowText::new("Automatic update checks", "Checks GitHub once a day. No personal data is sent."),
+        RowText::new("Automatic update checks", "Checks GitHub once an hour. No personal data is sent."),
         RowText::new("Audio output", "PulseAudio also covers PipeWire. Rodio talks to ALSA directly.").when(cfg!(target_os = "linux")),
         RowText::new("Output buffer", "More buffering can prevent clicks on busy computers. Less buffering makes controls respond sooner.").when(cfg!(windows)),
         RowText::new("Audio cache", "Save downloaded audio for later playback."),

@@ -39,8 +39,10 @@ and scaling while retaining useful color feedback.
 
 ## Build and run
 
-This fork currently builds from source. Spotifast's Homebrew, AUR, Flatpak,
-and other published packages install the upstream app, **not Spotidark**.
+Spotidark's release workflow builds a universal macOS DMG and a Windows x64
+EXE installer. Published builds appear in [Releases](https://github.com/darkroomengineering/spotidark/releases).
+Spotifast's Homebrew, AUR, Flatpak, and other packages install the upstream app,
+**not Spotidark**. Linux remains available from source.
 
 ```sh
 git clone https://github.com/darkroomengineering/spotidark.git
@@ -99,11 +101,21 @@ does not import or clear Spotifast's credentials. On Linux, settings are in
 `~/.config/spotidark/settings.json`. On macOS and Windows, they use the native
 application directories for the `engineering` / `darkroom` / `spotidark` identity.
 
-Update checks point to
-[Darkroom's releases](https://github.com/darkroomengineering/spotidark/releases).
-There is no Spotidark binary release yet. The inherited publishing workflows
-are gated off in this fork because their package identities and destinations
-still describe Spotifast. Build from source until fork packages are published.
+## Automatic updates
+
+Every successful CI run for the current `main` commit triggers a release build.
+The release publishes only `spotidark-macos.dmg` and `spotidark-windows.exe`.
+macOS releases require Developer ID signing and Apple notarization.
+
+Installed macOS and Windows builds check for updates and download them in the
+background by default. Choose **Restart to update** when ready; an update never
+interrupts playback automatically. Existing saved download preferences remain
+respected. Settings also provides a manual update check and an opt-out.
+
+Downloads are verified against GitHub's SHA-256 release metadata, so there is
+no separate appcast or checksum download. Move the macOS app into Applications
+before updating. Source and package-manager installations use their existing
+installation method. See [release and update details](docs/releases.md).
 
 ## Personal Spotify app
 

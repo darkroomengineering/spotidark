@@ -1,11 +1,10 @@
 # Packaging
 
-> **Spotidark fork:** the recipes below document upstream Spotifast packages.
-> Their publishing workflows are disabled outside `crmne/spotifast`.
-> Build Spotidark from source using [README.md](README.md). The macOS bundle
-> script and the new `spotidark.desktop` / `spotidark.svg` assets identify this
-> fork; the legacy Windows, Flatpak, Nix, AUR, and native package recipes must
-> be adapted before publishing Spotidark packages. Do not publish them as-is.
+> **Spotidark fork:** use [Spotidark releases](docs/releases.md) for the active
+> DMG/EXE workflow and automatic updates. The macOS bundle and Windows installer
+> identify this fork. The remaining recipes below document upstream Spotifast
+> packages; their publishing workflows remain disabled outside `crmne/spotifast`.
+> Do not publish those legacy packages as Spotidark.
 
 [`native-packages.yaml`](native-packages.yaml) is the packaging configuration:
 it pins the shared CLI and nFPM versions and declares Linux amd64/arm64 inputs,

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const LIMIT: u64 = 2 * 1024 * 1024 * 1024;
-#[cfg(not(target_os = "macos"))]
-const MARKER: &str = "fastpotify-portable-v1";
+#[cfg(any(all(windows, target_arch = "x86_64"), test))]
+const WINDOWS_INSTALLER_MARKER: &str = "spotidark-installer-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
@@ -76,29 +76,37 @@ pub fn detect_at(executable: &Path) -> Result<Installation> {
                 "This installation is in a system directory. Use your package manager or the download page."
             );
         }
+        bail!(
+            "Automatic updates are available for the macOS DMG and x86_64 Windows installer. Rebuild this Linux installation from source to update it."
+        );
     }
-    #[cfg(not(target_os = "macos"))]
-    let directory = executable
-        .parent()
-        .context("The application has no installation directory")?;
-    #[cfg(windows)]
+    #[cfg(all(windows, target_arch = "aarch64"))]
     {
-        let installed = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .map(|base| base.join("Programs/Fastpotify/fastpotify.exe"));
-        if fs::read_to_string(directory.join("fastpotify-installer.txt"))
-            .is_ok_and(|value| value.trim() == "fastpotify-installer-v1")
-            || (installed
-                .and_then(|path| path.canonicalize().ok())
-                .as_deref()
-                == Some(executable)
-                && directory.join("unins000.exe").is_file())
-        {
+        bail!(
+            "Automatic updates are not available for native Windows ARM builds. Install the x86_64 Windows installer under emulation or rebuild Spotidark from source."
+        );
+    }
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        let directory = executable
+            .parent()
+            .context("The application has no installation directory")?;
+        let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        if is_spotidark_windows_installer(executable, directory, local_app_data.as_deref()) {
             return Ok(Installation {
                 executable: executable.to_owned(),
                 kind: Kind::WindowsInstaller,
             });
         }
+        bail!(
+            "Automatic updates require the x86_64 Windows installer. Install Spotidark with spotidark-windows.exe or update this portable build manually."
+        );
+    }
+    #[cfg(all(windows, not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
+    {
+        bail!(
+            "Automatic updates require the x86_64 Windows installer. Rebuild Spotidark from source on this architecture."
+        );
     }
     #[cfg(target_os = "macos")]
     {
@@ -108,18 +116,31 @@ pub fn detect_at(executable: &Path) -> Result<Installation> {
             kind: Kind::MacBundle,
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        ensure!(
-            fs::read_to_string(directory.join("fastpotify-portable.txt"))
-                .is_ok_and(|value| value.trim() == MARKER),
-            "This installation does not identify itself as a portable download. Use the download page to install an update-enabled build."
+        bail!(
+            "Automatic updates require the macOS DMG or x86_64 Windows installer. Rebuild Spotidark from source on this platform."
         );
-        Ok(Installation {
-            executable: executable.to_owned(),
-            kind: Kind::Portable,
-        })
     }
+}
+
+#[cfg(any(all(windows, target_arch = "x86_64"), test))]
+fn is_spotidark_windows_installer(
+    executable: &Path,
+    directory: &Path,
+    local_app_data: Option<&Path>,
+) -> bool {
+    if fs::read_to_string(directory.join("spotidark-installer.txt"))
+        .is_ok_and(|value| value.trim() == WINDOWS_INSTALLER_MARKER)
+    {
+        return true;
+    }
+    local_app_data
+        .map(|base| base.join("Programs/Spotidark/spotidark.exe"))
+        .and_then(|path| path.canonicalize().ok())
+        .as_deref()
+        == Some(executable)
+        && directory.join("unins000.exe").is_file()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -671,6 +692,55 @@ mod tests {
         ] {
             assert!(detect_at(Path::new(path)).is_err());
         }
+    }
+
+    #[test]
+    fn windows_installer_detection_accepts_only_the_spotidark_marker_or_path() {
+        let root = std::env::temp_dir().join(format!(
+            "spotidark-installer-detection-{}",
+            rand::random::<u64>()
+        ));
+        let directory = root.join("custom");
+        fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("spotidark.exe");
+        fs::write(&executable, b"app").unwrap();
+        let executable = executable.canonicalize().unwrap();
+
+        fs::write(
+            directory.join("spotidark-installer.txt"),
+            WINDOWS_INSTALLER_MARKER,
+        )
+        .unwrap();
+        assert!(is_spotidark_windows_installer(
+            &executable,
+            &directory,
+            None
+        ));
+
+        fs::remove_file(directory.join("spotidark-installer.txt")).unwrap();
+        fs::write(
+            directory.join("fastpotify-installer.txt"),
+            "fastpotify-installer-v1",
+        )
+        .unwrap();
+        assert!(!is_spotidark_windows_installer(
+            &executable,
+            &directory,
+            None
+        ));
+
+        let installed = root.join("Programs/Spotidark");
+        fs::create_dir_all(&installed).unwrap();
+        let fallback = installed.join("spotidark.exe");
+        fs::write(&fallback, b"app").unwrap();
+        fs::write(installed.join("unins000.exe"), b"uninstaller").unwrap();
+        assert!(is_spotidark_windows_installer(
+            &fallback.canonicalize().unwrap(),
+            &installed,
+            Some(&root)
+        ));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

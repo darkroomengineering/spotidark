@@ -1,7 +1,7 @@
 ; The Windows installer, built with Inno Setup 6.3 or later from a release
-; binary (the release workflow does this on every tag):
+; binary (the release workflow does this after every successful main CI run):
 ;
-;   iscc /DVersion=0.1.4 /DArch=x86_64 /DBinary=...\fastpotify.exe ^
+;   iscc /DVersion=0.8.1 /DArch=x86_64 /DBinary=...\spotidark.exe ^
 ;        /DOutputDir=dist packaging\windows\fastpotify.iss
 ;
 ; Arch is x86_64 or aarch64, as in the Rust target triple, so the installer
@@ -27,22 +27,20 @@
   #define InnoArch "x64compatible"
 #endif
 
-#define AppName "Spotifast"
-#define AppExeName "spotifast.exe"
-; Keep the previous registry identity and installation directory on upgrade.
-#define AppIdentity "Fastpotify"
-#define SpotifastBinary ExtractFileDir(Binary) + "\spotifast.exe"
+#define AppName "Spotidark"
+#define AppExeName "spotidark.exe"
+#define AppIdentity "Spotidark"
 
 [Setup]
-; Never change: this is how Windows tells an update from a new program.
-AppId={{FCED1EA0-EBF5-4C32-BA3B-A3AD724BACC3}
+; Never change: this is how Windows tells a Spotidark update from a new program.
+AppId={{6875480E-65E0-4240-AF20-181C31D7BF7C}
 AppName={#AppName}
 AppVersion={#Version}
 AppVerName={#AppName} {#Version}
-AppPublisher=Carmine Paolino
-AppPublisherURL=https://spotifast.rocks
-AppSupportURL=https://github.com/crmne/spotifast/issues
-AppUpdatesURL=https://spotifast.rocks/download/
+AppPublisher=Darkroom Engineering
+AppPublisherURL=https://github.com/darkroomengineering/spotidark
+AppSupportURL=https://github.com/darkroomengineering/spotidark/issues
+AppUpdatesURL=https://github.com/darkroomengineering/spotidark/releases/latest
 DefaultDirName={localappdata}\Programs\{#AppIdentity}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -52,8 +50,8 @@ ArchitecturesInstallIn64BitMode={#InnoArch}
 MinVersion=10.0
 LicenseFile=..\..\LICENSE
 OutputDir={#OutputDir}
-OutputBaseFilename=spotifast-v{#Version}-{#Arch}-pc-windows-msvc-setup
-SetupIconFile=fastpotify.ico
+OutputBaseFilename=spotidark-windows
+SetupIconFile=spotidark.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -74,32 +72,31 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "{#Binary}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SpotifastBinary}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "fastpotify-installer.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "spotidark-installer.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Registry]
-; Spotify links (spotify:track:…) open in Spotifast. Registered for this
+; Spotify links (spotify:track:…) open in Spotidark. Registered for this
 ; user only, like the program itself. The official client registers the same
 ; scheme when it is installed; whichever was set up last has the links, and
-; Settings > Apps > Default apps can hand them to the other, where Spotifast
+; Settings > Apps > Default apps can hand them to the other, where Spotidark
 ; is listed through the capabilities below.
 Root: HKCU; Subkey: "Software\Classes\spotify"; ValueType: string; ValueName: ""; ValueData: "URL:Spotify link"
 Root: HKCU; Subkey: "Software\Classes\spotify"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\spotify\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"",0"
 Root: HKCU; Subkey: "Software\Classes\spotify\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
-Root: HKCU; Subkey: "Software\Classes\Fastpotify.spotify"; ValueType: string; ValueName: ""; ValueData: "URL:Spotify link"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\Fastpotify.spotify"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCU; Subkey: "Software\Classes\Fastpotify.spotify\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"",0"
-Root: HKCU; Subkey: "Software\Classes\Fastpotify.spotify\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\Spotidark.spotify"; ValueType: string; ValueName: ""; ValueData: "URL:Spotify link"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Spotidark.spotify"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\Spotidark.spotify\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"",0"
+Root: HKCU; Subkey: "Software\Classes\Spotidark.spotify\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
 Root: HKCU; Subkey: "Software\{#AppIdentity}\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#AppName}"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\{#AppIdentity}\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "A native Spotify client"
-Root: HKCU; Subkey: "Software\{#AppIdentity}\Capabilities\URLAssociations"; ValueType: string; ValueName: "spotify"; ValueData: "Fastpotify.spotify"
+Root: HKCU; Subkey: "Software\{#AppIdentity}\Capabilities\URLAssociations"; ValueType: string; ValueName: "spotify"; ValueData: "Spotidark.spotify"
 Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "{#AppIdentity}"; ValueData: "Software\{#AppIdentity}\Capabilities"; Flags: uninsdeletevalue
 
 [Run]

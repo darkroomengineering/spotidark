@@ -1,4 +1,4 @@
-//! Daily update check against GitHub releases.
+//! Hourly update check against GitHub releases.
 
 use std::time::Duration;
 
@@ -28,7 +28,7 @@ const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/darkroomengineering/spotidark/releases/latest";
 
 /// Update-check interval.
-pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {

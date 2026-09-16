@@ -134,41 +134,25 @@ maintainer approval and an exact force-with-lease guard; keep a recovery ref.
 
 ## Releases
 
-A release is not the tag alone. Do these in order:
+Spotidark automatically builds a release after CI succeeds for the current
+`main` commit. Follow [docs/releases.md](docs/releases.md), not the preserved
+upstream packaging recipes.
 
-1. Change the `Cargo.toml` version, add the matching release to the Flatpak
-   metainfo, and update the lockfile with a build.
-   Refresh the `flake.nix` vendor hash when the lockfile changes, even when
-   only the package version changed. Verify `nix build .#default` locally or
-   in CI. Wait for every required CI job on the release commit before tagging.
-   Commit and push this before the tag so the binaries report the right
-   version.
-2. Push the `v*` tag, which triggers the release workflow. Wait for every
-   required artifact and `checksums.txt`, then replace the generated notes
-   with written ones.
-3. A prerelease stops here. Keep the stable version current on the website,
-   Homebrew, and AUR. The prerelease remains available from GitHub's releases
-   page.
-4. For a stable release, only after the GitHub release exists, update
-   `docs/_config.yml` `fastpotify_version` and
-   `docs/_data/versions.yml`. The selector carries only the latest stable
-   version: replace its version entry, make it `current`, and point it at
-   `/download/`. Do not retain older version entries; they remain available
-   through the Changelog link. Never make the download page point at files
-   that do not exist yet.
-5. Update the Homebrew cask in the maintainer's tap and the AUR package from
-   the release's `checksums.txt`. The packaging workflow handles configured
-   destinations when `PUBLISH_HOMEBREW` and `PUBLISH_AUR` are enabled. Otherwise
-   use the in-repository packaging CLI to prepare, review and publish them;
-   see `PACKAGING.md`. Native package validation remains required.
+- Build the exact CI-tested commit and recheck current main before publication.
+- Stamp the release version into the build's temporary Cargo manifest and
+  lockfile. Do not commit CI-generated version changes or alter the source
+  package's Nix vendor hash for this temporary build stamp.
+- Publish only `spotidark-macos.dmg` and `spotidark-windows.exe`, under an
+  immutable version tag. GitHub's release asset digests supply updater
+  checksums; no separate appcast or checksum attachment is required.
+- Require Developer ID signing, notarization, and validation for public macOS
+  releases. Missing credentials must fail publication, never silently publish
+  an ad-hoc build.
+- Manual release workflow dispatch is build-only. Verify both platform builds
+  and publication separately before reporting a release shipped.
+- Retain Spotifast's MIT notice and contributor credit. Do not activate the
+  inherited Homebrew, AUR, Flatpak, or Linux packaging publishers.
 
-Before writing release notes, read the previous two stable releases and match
-their style. Start with a short plain-language summary, use `New` and `Fixed`
-sections as applicable, lead each item with a bold user-facing result, credit
-contributors and reporters with the relevant issue or pull request numbers,
-include a `Thanks` section, and end with the full changelog link. Do not leave
-the generated notes in place or introduce a different section scheme for
-ordinary improvements.
-
-Skipping an applicable step ships a release that lies somewhere; the dropdown
-was forgotten once already.
+When the committed lockfile changes, still verify `nix build .#default` locally
+or in CI and refresh its vendor hash as required. Never point documentation at
+an artifact that has not been published.

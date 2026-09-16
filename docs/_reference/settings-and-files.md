@@ -275,7 +275,8 @@ main fields are:
 | `milkdrop_fullscreen` | `false` | The MilkDrop window fills the screen |
 | `milkdrop_size` | `640, 480` | The MilkDrop window's size in points |
 | `keep_playing_in_background` | `true` | Close to tray |
-| `check_for_updates` | `true` | Ask GitHub once a day for a newer release |
+| `check_for_updates` | `true` | Ask GitHub once an hour for a newer release |
+| `download_updates_automatically` | `true` | Download verified updates in the background; installation waits for Restart to update. Existing saved opt-outs remain respected |
 | `web_client_id` | none | Optional personal Spotify app id used alongside shared coverage |
 | `personal_app_nudge_at` | none | Legacy daily-reminder timestamp, retained for older releases |
 | `personal_app_intro_seen` | `false` | Whether the Premium personal-app introduction was dismissed or followed (available since 0.8.0) |

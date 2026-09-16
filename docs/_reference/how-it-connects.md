@@ -110,19 +110,21 @@ and dragging never write that order back to Spotify.
 - Spotifast has no telemetry, analytics, or hosted service. When the lyrics
   panel is open and Spotify has no lyrics, it sends the track's artist, title,
   album, and length to [lrclib.net](https://lrclib.net). It also checks
-  api.github.com once a day for updates. You can turn off automatic checks in
+  api.github.com once an hour for updates. You can turn off automatic checks in
   Settings, or request one there at any time. On macOS, **Check for Updates**
   is also in the application menu.
 
-  On Windows, macOS, and Linux, downloading an update fetches release metadata and
-  `checksums.txt` from the project's GitHub release, then the matching binary
-  archive, Windows installer, or universal macOS DMG. Spotifast checks the published SHA-256 digest
-  and the portable executable's reported version before offering a restart.
-  Automatic downloads are optional; installation always waits for your click.
+  Spotidark's installed Windows and macOS builds fetch release metadata from
+  Darkroom Engineering's GitHub repository, then the Windows installer or
+  universal macOS DMG. The updater requires the asset's SHA-256 digest from that
+  metadata and checks the bytes and size before offering a restart. No separate
+  checksum file or appcast is downloaded. Background downloads default on;
+  existing saved opt-outs remain respected. Installation waits for your click.
   Checks and downloads do not open the update popup. The green update pill opens
   it on request; closing the popup does not cancel a download.
-  No Spotify credential is sent. These are GitHub-hosted checksums, not a
-  separate publisher signature.
+  No Spotify credential is sent. These are GitHub-hosted digests, not a
+  separate publisher signature. Source, portable, Linux, and package-manager
+  installations use their own installation method. See [releases](../releases.md).
 
   Updates stage their files in a private `.fastpotify-update-*` directory beside
   the application so replacement stays on the same filesystem. The directory

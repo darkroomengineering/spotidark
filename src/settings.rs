@@ -267,7 +267,7 @@ pub struct Settings {
     pub playback_authorized: bool,
     /// Closing the window hides to the tray and keeps the music playing.
     pub keep_playing_in_background: bool,
-    /// Ask GitHub once a day whether a newer release exists.
+    /// Ask GitHub once an hour whether a newer release exists.
     pub check_for_updates: bool,
     pub download_updates_automatically: bool,
     /// Context URIs and the local Liked Songs key, in pin order.
@@ -409,7 +409,7 @@ impl Default for Settings {
             playback_authorized: false,
             keep_playing_in_background: true,
             check_for_updates: true,
-            download_updates_automatically: false,
+            download_updates_automatically: true,
             pinned_contexts: Vec::new(),
             liked_songs_pinned: true,
             sidebar_order: Vec::new(),
@@ -869,6 +869,21 @@ mod tests {
         ] {
             assert_eq!(super::valid_client_id(value), valid, "{value:?}");
         }
+    }
+
+    #[test]
+    fn automatic_update_downloads_default_on_and_preserve_an_explicit_opt_out() {
+        assert!(Settings::default().check_for_updates);
+        assert!(Settings::default().download_updates_automatically);
+        let older: Settings = serde_json::from_str("{}").unwrap();
+        assert!(older.download_updates_automatically);
+
+        let opted_out: Settings =
+            serde_json::from_str(r#"{"download_updates_automatically":false}"#).unwrap();
+        assert!(!opted_out.download_updates_automatically);
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&opted_out).unwrap()).unwrap();
+        assert!(!restored.download_updates_automatically);
     }
 
     #[test]

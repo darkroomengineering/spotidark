@@ -594,7 +594,7 @@ pub enum Command {
     /// Send the account to a receiver so it joins Spotify Connect.
     ActivateReceiver(Box<crate::zeroconf::Receiver>),
     /// Ask GitHub whether a newer release exists. Manual checks report every
-    /// outcome; the daily check only announces a new release.
+    /// outcome; the automatic check only announces a new release.
     CheckForUpdates {
         manual: bool,
         source: crate::updates::Source,

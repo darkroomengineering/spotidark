@@ -48,6 +48,8 @@ jobs:
         run: python3 packaging/flatpak/test-metainfo.py
       - name: Linux launcher packaging regressions
         run: python3 packaging/test-launchers.py
+      - name: Continuous release regressions
+        run: python3 packaging/test-release.py
       - name: Clippy (default features)
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Clippy (all features)

@@ -97,6 +97,8 @@ struct Asset {
     name: String,
     browser_download_url: String,
     size: u64,
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 fn asset<'a>(metadata: &'a Metadata, name: &str) -> Result<&'a Asset> {
@@ -117,22 +119,48 @@ fn asset<'a>(metadata: &'a Metadata, name: &str) -> Result<&'a Asset> {
     Ok(asset)
 }
 
-fn checksum(text: &str, name: &str) -> Result<String> {
-    let mut found = None;
-    for line in text.lines() {
-        let mut fields = line.split_whitespace();
-        if let (Some(digest), Some(file), None) = (fields.next(), fields.next(), fields.next())
-            && file.trim_start_matches('*') == name
-        {
-            ensure!(found.is_none(), "Duplicate checksum for the update");
-            ensure!(
-                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
-                "Invalid update checksum"
-            );
-            found = Some(digest.to_ascii_lowercase());
-        }
+fn asset_digest(asset: &Asset) -> Result<String> {
+    let digest = asset
+        .digest
+        .as_deref()
+        .context("The release asset is missing its SHA-256 digest")?
+        .strip_prefix("sha256:")
+        .context("The release asset does not have a SHA-256 digest")?;
+    ensure!(
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Invalid update SHA-256 digest"
+    );
+    Ok(digest.to_ascii_lowercase())
+}
+
+fn package_name(
+    installation: &install::Installation,
+    os: &str,
+    architecture: &str,
+) -> Result<&'static str> {
+    match (os, architecture, &installation.kind) {
+        #[cfg(target_os = "macos")]
+        ("macos", "aarch64" | "x86_64", install::Kind::MacBundle) => Ok("spotidark-macos.dmg"),
+        ("windows", "x86_64", install::Kind::WindowsInstaller) => Ok("spotidark-windows.exe"),
+        ("windows", "aarch64", _) => bail!(
+            "Automatic updates are not available for native Windows ARM builds. Install the x86_64 Windows installer under emulation or rebuild Spotidark from source."
+        ),
+        ("windows", _, install::Kind::Portable) => bail!(
+            "Automatic updates require the x86_64 Windows installer. Install Spotidark with spotidark-windows.exe or update this portable build manually."
+        ),
+        ("windows", _, install::Kind::WindowsInstaller) => bail!(
+            "Automatic updates require the x86_64 Windows installer. Rebuild Spotidark from source on this architecture."
+        ),
+        ("linux", _, _) => bail!(
+            "Automatic updates are available for the macOS DMG and x86_64 Windows installer. Rebuild this Linux installation from source to update it."
+        ),
+        (_, _, install::Kind::Portable) => bail!(
+            "Automatic updates require the macOS DMG or x86_64 Windows installer. Update this portable build manually or rebuild Spotidark from source."
+        ),
+        _ => bail!(
+            "Automatic updates require the macOS DMG or x86_64 Windows installer. Rebuild Spotidark from source on this platform."
+        ),
     }
-    found.context("The release is missing the update checksum")
 }
 
 pub fn download(
@@ -152,6 +180,26 @@ pub fn download_for(
     proxy: &crate::settings::ProxyConfig,
     progress: impl Fn(u64, u64),
 ) -> Result<install::Prepared> {
+    download_for_platform(
+        release,
+        source,
+        installation,
+        proxy,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        progress,
+    )
+}
+
+fn download_for_platform(
+    release: &Release,
+    source: &Source,
+    installation: install::Installation,
+    proxy: &crate::settings::ProxyConfig,
+    os: &str,
+    architecture: &str,
+    progress: impl Fn(u64, u64),
+) -> Result<install::Prepared> {
     ensure!(
         super::parse(&release.version).is_some_and(|(_, pre)| !pre)
             && release
@@ -160,6 +208,7 @@ pub fn download_for(
                 .all(|byte| byte.is_ascii_digit() || byte == b'.'),
         "Invalid release version"
     );
+    let name = package_name(&installation, os, architecture)?;
     let policy = source.clone();
     let http = crate::http::blocking_builder(proxy)
         .map_err(anyhow::Error::msg)?
@@ -186,52 +235,27 @@ pub fn download_for(
             && metadata.tag_name == format!("v{}", release.version),
         "The release changed. Check for updates again."
     );
-    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
-        ("windows", "aarch64") => "aarch64-pc-windows-msvc",
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("macos", "aarch64" | "x86_64") => "macos-universal",
-        _ => bail!("Use the download page for this operating system or architecture"),
-    };
-    let stem = format!("fastpotify-v{}-{target}", release.version);
-    let name = match installation.kind {
-        #[cfg(target_os = "macos")]
-        install::Kind::MacBundle => format!("{stem}.dmg"),
-        install::Kind::WindowsInstaller => format!("{stem}-setup.exe"),
-        install::Kind::Portable if cfg!(windows) => format!("{stem}.zip"),
-        install::Kind::Portable => format!("{stem}.tar.gz"),
-    };
-    let package = asset(&metadata, &name)?;
-    let checksums = asset(&metadata, "checksums.txt")?;
-    for candidate in [package, checksums] {
-        let url = reqwest::Url::parse(&candidate.browser_download_url)?;
+    let package = asset(&metadata, name)?;
+    let expected = asset_digest(package)?;
+    let url = reqwest::Url::parse(&package.browser_download_url)?;
+    ensure!(
+        source.allowed(&url),
+        "Update download is not on the release host"
+    );
+    if matches!(source, Source::GitHub) {
         ensure!(
-            source.allowed(&url),
-            "Update download is not on the release host"
+            url.host_str() == Some("github.com")
+                && url.path()
+                    == format!(
+                        "/darkroomengineering/spotidark/releases/download/v{}/{}",
+                        release.version, package.name
+                    ),
+            "Update asset does not belong to this release"
         );
-        if matches!(source, Source::GitHub) {
-            ensure!(
-                url.host_str() == Some("github.com")
-                    && url.path()
-                        == format!(
-                            "/darkroomengineering/spotidark/releases/download/v{}/{}",
-                            release.version, candidate.name
-                        ),
-                "Update asset does not belong to this release"
-            );
-        }
     }
-    let mut checksum_text = String::new();
-    http.get(&checksums.browser_download_url)
-        .send()?
-        .error_for_status()?
-        .take(1024 * 1024)
-        .read_to_string(&mut checksum_text)?;
-    let expected = checksum(&checksum_text, &name)?;
     let directory = install::staging(&installation)?;
     let result = (|| -> Result<install::Prepared> {
-        let archive = directory.join(&name);
+        let archive = directory.join(name);
         let mut output = File::create(&archive)?;
         let mut response = http
             .get(&package.browser_download_url)
@@ -277,34 +301,15 @@ pub fn download_for(
                 version: release.version.clone(),
             });
         }
-        let payload = if installation.kind == install::Kind::WindowsInstaller {
-            archive.clone()
-        } else {
-            let command = installation
-                .executable
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .unwrap_or("fastpotify")
-                .to_ascii_lowercase();
-            let executable = match (command.as_str(), cfg!(windows)) {
-                ("spotidark", true) => "spotidark.exe",
-                ("spotidark", false) => "spotidark",
-                ("spotifast", true) => "spotifast.exe",
-                ("spotifast", false) => "spotifast",
-                (_, true) => "fastpotify.exe",
-                (_, false) => "fastpotify",
-            };
-            let payload = directory.join(executable);
-            install::extract(&archive, &format!("{stem}/{executable}"), &payload)?;
-            install::verify_version(&payload, &release.version)?;
-            fs::remove_file(&archive)?;
-            payload
-        };
+        ensure!(
+            installation.kind == install::Kind::WindowsInstaller,
+            "Portable updates are not supported"
+        );
         Ok(install::Prepared {
-            sha256: install::hash(&payload)?,
+            sha256: expected.clone(),
             installation,
             directory: directory.clone(),
-            payload,
+            payload: archive,
             version: release.version.clone(),
         })
     })();
@@ -318,7 +323,7 @@ pub fn download_for(
 mod tests {
     use super::*;
 
-    #[cfg(all(feature = "demo", any(target_os = "windows", target_os = "linux")))]
+    #[cfg(feature = "demo")]
     #[test]
     fn direct_and_proxied_update_downloads_preserve_integrity_checks() {
         use std::net::TcpListener;
@@ -344,24 +349,17 @@ mod tests {
             } else {
                 crate::settings::ProxyConfig::Off
             };
-            let platform = if cfg!(windows) {
-                "pc-windows-msvc.zip"
-            } else {
-                "unknown-linux-gnu.tar.gz"
-            };
-            let name = format!("fastpotify-v0.8.0-{}-{platform}", std::env::consts::ARCH);
+            let name = "spotidark-windows.exe";
             let payload = b"damaged download";
             let hash = if interrupted {
                 format!("{:x}", Sha256::digest(payload))
             } else {
                 "0".repeat(64)
             };
-            let checksums = format!("{hash}  {name}\n");
             let metadata = serde_json::json!({"tag_name":"v0.8.0", "assets":[
-                {"name":name,"size":payload.len() + usize::from(interrupted),"browser_download_url":format!("{base}/package")},
-                {"name":"checksums.txt","size":checksums.len(),"browser_download_url":format!("{base}/checksums")}
+                {"name":name,"size":payload.len() + usize::from(interrupted),"digest":format!("sha256:{hash}"),"browser_download_url":format!("{base}/package")}
             ]}).to_string();
-            let expected_urls = ["latest.json", "checksums", "package"].map(|path| {
+            let expected_urls = ["latest.json", "package"].map(|path| {
                 if proxied {
                     format!("GET {base}/{path} HTTP/1.1")
                 } else {
@@ -370,13 +368,9 @@ mod tests {
             });
             let server = std::thread::spawn(move || {
                 listener.set_nonblocking(true).unwrap();
-                for body in [
-                    metadata.into_bytes(),
-                    checksums.into_bytes(),
-                    payload.to_vec(),
-                ]
-                .into_iter()
-                .zip(expected_urls)
+                for body in [metadata.into_bytes(), payload.to_vec()]
+                    .into_iter()
+                    .zip(expected_urls)
                 {
                     let (body, expected_request) = body;
                     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -422,17 +416,19 @@ mod tests {
             fs::write(&target, b"original").unwrap();
             let installation = install::Installation {
                 executable: target.clone(),
-                kind: install::Kind::Portable,
+                kind: install::Kind::WindowsInstaller,
             };
             let release = Release {
                 version: "0.8.0".into(),
                 url: base.clone(),
             };
-            let error = download_for(
+            let error = download_for_platform(
                 &release,
                 &Source::local(&base).unwrap(),
                 installation,
                 &proxy,
+                "windows",
+                "x86_64",
                 |_, _| {},
             )
             .unwrap_err();
@@ -452,13 +448,69 @@ mod tests {
     }
 
     #[test]
-    fn checksums_must_be_unique_valid_and_for_the_exact_asset() {
+    fn release_assets_require_a_sha256_digest() {
+        let asset = |digest: Option<String>| Asset {
+            name: "spotidark-windows.exe".into(),
+            browser_download_url: "https://example.invalid/update".into(),
+            size: 1,
+            digest,
+        };
         let digest = "a".repeat(64);
-        let valid = format!("{digest}  app.zip\n");
-        assert_eq!(checksum(&valid, "app.zip").unwrap(), digest);
-        assert!(checksum(&valid, "other.zip").is_err());
-        assert!(checksum(&(valid.clone() + &valid), "app.zip").is_err());
-        assert!(checksum("invalid app.zip", "app.zip").is_err());
+        assert_eq!(
+            asset_digest(&asset(Some(format!("sha256:{digest}")))).unwrap(),
+            digest
+        );
+        assert!(asset_digest(&asset(None)).is_err());
+        assert!(asset_digest(&asset(Some(format!("sha512:{}", "a".repeat(64))))).is_err());
+        assert!(asset_digest(&asset(Some(format!("sha256:{}", "a".repeat(63))))).is_err());
+        assert!(asset_digest(&asset(Some(format!("sha256:{}g", "a".repeat(63))))).is_err());
+    }
+
+    #[test]
+    fn only_the_published_installers_are_update_targets() {
+        let windows = install::Installation {
+            executable: "spotidark.exe".into(),
+            kind: install::Kind::WindowsInstaller,
+        };
+        assert_eq!(
+            package_name(&windows, "windows", "x86_64").unwrap(),
+            "spotidark-windows.exe"
+        );
+        assert!(
+            package_name(&windows, "windows", "aarch64")
+                .unwrap_err()
+                .to_string()
+                .contains("Windows ARM")
+        );
+
+        let portable = install::Installation {
+            executable: "spotidark".into(),
+            kind: install::Kind::Portable,
+        };
+        assert!(
+            package_name(&portable, "windows", "x86_64")
+                .unwrap_err()
+                .to_string()
+                .contains("Windows installer")
+        );
+        assert!(
+            package_name(&portable, "linux", "x86_64")
+                .unwrap_err()
+                .to_string()
+                .contains("Rebuild this Linux installation from source")
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            let mac = install::Installation {
+                executable: "Spotidark.app/Contents/MacOS/spotidark".into(),
+                kind: install::Kind::MacBundle,
+            };
+            assert_eq!(
+                package_name(&mac, "macos", "aarch64").unwrap(),
+                "spotidark-macos.dmg"
+            );
+        }
     }
 
     #[test]
