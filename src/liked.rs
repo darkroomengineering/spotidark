@@ -1,6 +1,10 @@
 //! Account-scoped Liked Songs metadata and optimistic edits.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    io::{BufReader, BufWriter, Write},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +18,7 @@ const FRESH_SECONDS: i64 = 15 * 60;
 pub struct Cache {
     version: u32,
     pub account_id: String,
-    items: Vec<SavedTrack>,
+    items: Vec<Arc<SavedTrack>>,
     total: u32,
     next_offset: Option<u32>,
     refreshed_at: i64,
@@ -40,7 +44,7 @@ impl Cache {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Change {
     saved: bool,
-    item: SavedTrack,
+    item: Arc<SavedTrack>,
     confirmed: bool,
     /// Only a refresh started after the write can retire its optimistic state.
     #[serde(skip)]
@@ -48,7 +52,7 @@ struct Change {
 }
 
 struct Refresh {
-    rows: PagedList<SavedTrack>,
+    rows: PagedList<Arc<SavedTrack>>,
     through: usize,
 }
 
@@ -57,7 +61,7 @@ pub struct LikedSongs {
     pub generation: u64,
     pub cache_checked: bool,
     pub cache_loading: bool,
-    server: PagedList<SavedTrack>,
+    server: PagedList<Arc<SavedTrack>>,
     refresh: Option<Refresh>,
     changes: BTreeMap<String, Change>,
     refreshed_at: i64,
@@ -154,9 +158,11 @@ impl LikedSongs {
             .find(|item| item.track.uri == uri)
             .cloned()
             .or_else(|| self.changes.get(&uri).map(|change| change.item.clone()))
-            .unwrap_or_else(|| SavedTrack {
-                added_at: Some(jiff::Timestamp::now().to_string()),
-                track,
+            .unwrap_or_else(|| {
+                Arc::new(SavedTrack {
+                    added_at: Some(jiff::Timestamp::now().to_string()),
+                    track,
+                })
             });
         self.changes.insert(
             uri,
@@ -185,7 +191,7 @@ impl LikedSongs {
 
     pub fn update_track(&mut self, track: &Track) -> bool {
         if let Some(change) = self.changes.get_mut(&track.uri) {
-            change.item.track = track.clone();
+            Arc::make_mut(&mut change.item).track = track.clone();
             return true;
         }
         false
@@ -203,13 +209,13 @@ impl LikedSongs {
     }
 
     /// Demo fixtures and already loaded UI data can seed the same model.
-    pub fn seed(&mut self, view: &PagedList<SavedTrack>) {
+    pub fn seed(&mut self, view: &PagedList<Arc<SavedTrack>>) {
         if !self.server.loaded_once && view.loaded_once {
             self.server = view.clone();
         }
     }
 
-    pub fn sync_view(&self, view: &mut PagedList<SavedTrack>) {
+    pub fn sync_view(&self, view: &mut PagedList<Arc<SavedTrack>>) {
         let mut items = self.server.items.clone();
         let mut total = self.server.total.unwrap_or(0);
         let mut additions = Vec::new();
@@ -231,9 +237,11 @@ impl LikedSongs {
         items.splice(0..0, additions);
         if view.items != items || view.total != Some(total) {
             view.revision = view.revision.wrapping_add(1);
-            view.items = items;
             view.total = Some(total);
         }
+        // Rebind even equal values so an unchanged refresh shares the
+        // canonical server rows instead of retaining a second metadata graph.
+        view.items = items;
         view.next_offset = self.server.next_offset;
         view.loading = self.cache_loading || self.refresh.is_some() || self.server.loading;
         view.loaded_once = self.server.loaded_once || !self.changes.is_empty();
@@ -273,8 +281,14 @@ impl LikedSongs {
 }
 
 pub async fn read(path: &std::path::Path, account: &str) -> Option<Cache> {
-    let bytes = tokio::fs::read(path).await.ok()?;
-    let cache: Cache = serde_json::from_slice(&bytes).ok()?;
+    let path = path.to_owned();
+    let cache: Cache = tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(path)?;
+        serde_json::from_reader::<_, Cache>(BufReader::new(file)).map_err(std::io::Error::other)
+    })
+    .await
+    .ok()?
+    .ok()?;
     cache.valid_for(account).then_some(cache)
 }
 
@@ -282,10 +296,24 @@ pub async fn write(path: &std::path::Path, cache: &Cache) -> std::io::Result<()>
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let bytes = serde_json::to_vec(cache).map_err(std::io::Error::other)?;
     let temporary = path.with_extension("json.tmp");
-    tokio::fs::write(&temporary, bytes).await?;
-    crate::util::replace_file(&temporary, path)
+    let path = path.to_owned();
+    let cache = cache.clone();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::create(&temporary)?;
+        let mut writer = BufWriter::new(file);
+        if let Err(error) = serde_json::to_writer(&mut writer, &cache)
+            .map_err(std::io::Error::other)
+            .and_then(|()| writer.flush())
+        {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        writer.get_ref().sync_all()?;
+        crate::util::replace_file(&temporary, &path)
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 #[cfg(test)]
@@ -386,6 +414,23 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_refresh_rebinds_the_view_to_canonical_rows() {
+        let mut songs = loaded(100, 100);
+        let mut view = PagedList::default();
+        songs.sync_view(&mut view);
+        let old_row = Arc::clone(&view.items[0]);
+        let revision = view.revision;
+
+        songs.start_refresh(2);
+        songs.absorb(0, page(0, 100, 100), 20_000);
+        songs.sync_view(&mut view);
+
+        assert_eq!(view.revision, revision, "equal values keep their revision");
+        assert!(!Arc::ptr_eq(&old_row, &view.items[0]));
+        assert!(Arc::ptr_eq(&songs.server.items[0], &view.items[0]));
+    }
+
+    #[test]
     fn failed_refresh_keeps_the_last_good_prefix_and_checkpoint() {
         let mut songs = loaded(100, 100);
         let mut view = PagedList::default();
@@ -456,18 +501,10 @@ mod tests {
         let mut songs = loaded(50, 50);
         songs.change(item(999).track.uri, true, item(999).track);
         songs.change(item(888).track.uri, true, item(888).track);
-        songs
-            .changes
-            .get_mut(&item(999).track.uri)
-            .unwrap()
-            .item
-            .added_at = Some("2026-09-09T10:00:00Z".into());
-        songs
-            .changes
-            .get_mut(&item(888).track.uri)
-            .unwrap()
-            .item
-            .added_at = Some("2026-09-09T10:00:01Z".into());
+        Arc::make_mut(&mut songs.changes.get_mut(&item(999).track.uri).unwrap().item).added_at =
+            Some("2026-09-09T10:00:00Z".into());
+        Arc::make_mut(&mut songs.changes.get_mut(&item(888).track.uri).unwrap().item).added_at =
+            Some("2026-09-09T10:00:01Z".into());
         let mut view = PagedList::default();
         songs.sync_view(&mut view);
         assert_eq!(view.items[0].track.uri, item(888).track.uri);

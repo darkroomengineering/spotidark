@@ -219,7 +219,7 @@ pub fn menu_item_enabled(
 ) -> bool {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(
-        vec2(width, 28.0),
+        vec2(width, 44.0),
         if enabled {
             Sense::click()
         } else {
@@ -227,9 +227,17 @@ pub fn menu_item_enabled(
         },
     );
     if ui.is_rect_visible(rect) {
-        if response.hovered() && enabled {
-            ui.painter()
-                .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
+        let hover = ui.ctx().animate_bool_with_time(
+            response.id.with("hover"),
+            response.hovered() && enabled,
+            0.12,
+        );
+        if hover > 0.0 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(6),
+                palette.surface.lerp_to_gamma(palette.surface_hover, hover),
+            );
         }
         let color = if enabled { palette.text } else { palette.dim };
         let mut x = rect.left() + 10.0;
@@ -291,7 +299,7 @@ pub fn menu_submenu<R>(
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> Option<egui::InnerResponse<R>> {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 44.0), Sense::click());
     let is_in_menu = egui::menu::is_in_menu(ui);
     let submenu_id = egui::menu::SubMenu::id_from_widget_id(response.id);
     let is_open = if is_in_menu {
@@ -301,9 +309,17 @@ pub fn menu_submenu<R>(
     };
 
     if ui.is_rect_visible(rect) {
-        if response.hovered() || is_open {
-            ui.painter()
-                .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
+        let hover = ui.ctx().animate_bool_with_time(
+            response.id.with("hover"),
+            response.hovered() || is_open,
+            0.12,
+        );
+        if hover > 0.0 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(6),
+                palette.surface.lerp_to_gamma(palette.surface_hover, hover),
+            );
         }
         let color = palette.text;
         let mut x = rect.left() + 10.0;
@@ -833,9 +849,9 @@ fn columns(width: f32, row: &TrackRow<'_>) -> Columns {
         } else {
             0.0
         },
-        heart: if row.compact { 0.0 } else { 36.0 },
+        heart: if row.compact { 0.0 } else { 44.0 },
         duration: if row.compact { 44.0 } else { 56.0 },
-        more: if row.compact { 0.0 } else { 36.0 },
+        more: if row.compact { 0.0 } else { 44.0 },
     }
 }
 
@@ -937,6 +953,7 @@ fn track_row_contents(
             .is_some_and(|uri| uri == row.item.uri());
     let playing = is_current && app.believed_playing();
     let hovered = ui.rect_contains_pointer(rect) || response.has_focus();
+    let (hover, press) = theme::control_state(&response);
     if row.picked {
         // Keep the existing translucent selection, using a neutral palette
         // color so selecting a song does not mark it as playing.
@@ -945,15 +962,21 @@ fn track_row_contents(
             CornerRadius::same(6),
             palette
                 .secondary
-                .gamma_multiply(if hovered { 0.30 } else { 0.20 }),
+                .gamma_multiply(0.20 + 0.10 * hover)
+                .lerp_to_gamma(palette.surface_active, press * 0.2),
         );
-    } else if hovered {
+    } else if hover > 0.0 {
         ui.painter().rect_filled(
             rect,
             CornerRadius::same(6),
-            palette
-                .surface_hover
-                .gamma_multiply(if palette.dark { 0.7 } else { 1.0 }),
+            egui::Color32::TRANSPARENT
+                .lerp_to_gamma(
+                    palette
+                        .surface_hover
+                        .gamma_multiply(if palette.dark { 0.7 } else { 1.0 }),
+                    hover,
+                )
+                .lerp_to_gamma(palette.surface_active, press * 0.2),
         );
     }
     // The row highlight also shows keyboard focus. Do not add an outline
@@ -1887,14 +1910,20 @@ pub fn card(
     }
     let mut play = false;
     if ui.is_rect_visible(rect) {
-        let hovered = ui.rect_contains_pointer(rect);
-        if hovered {
+        let hovered = ui.rect_contains_pointer(rect) || response.has_focus();
+        let (hover, press) = theme::control_state(&response);
+        if hover > 0.0 {
             ui.painter().rect_filled(
                 rect,
                 CornerRadius::same(theme::RADIUS),
-                palette
-                    .surface_hover
-                    .gamma_multiply(if palette.dark { 0.8 } else { 1.0 }),
+                egui::Color32::TRANSPARENT
+                    .lerp_to_gamma(
+                        palette
+                            .surface_hover
+                            .gamma_multiply(if palette.dark { 0.8 } else { 1.0 }),
+                        hover,
+                    )
+                    .lerp_to_gamma(palette.surface_active, press * 0.2),
             );
         }
         let image_rect = Rect::from_min_size(rect.min + vec2(PAD, PAD), Vec2::splat(image_size));
@@ -1941,7 +1970,7 @@ pub fn card(
         ui.painter()
             .galley(subtitle_pos, subtitle_galley, palette.secondary);
 
-        if playable && hovered {
+        if playable {
             let button_rect = Rect::from_center_size(
                 pos2(image_rect.right() - 26.0, image_rect.bottom() - 26.0),
                 Vec2::splat(44.0),
@@ -1951,16 +1980,21 @@ pub fn card(
                     .max_rect(button_rect)
                     .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
             );
-            play = theme::circle_button(
-                &mut child,
-                Icon::PlayFilled,
-                44.0,
-                palette.accent,
-                palette.accent_hover,
-                palette.on_accent,
-                "Play",
-            )
-            .clicked();
+            child.multiply_opacity(hover);
+            if hover > 0.0 {
+                child.add_enabled_ui(hovered, |ui| {
+                    play = theme::circle_button(
+                        ui,
+                        Icon::PlayFilled,
+                        44.0,
+                        palette.accent,
+                        palette.accent_hover,
+                        palette.on_accent,
+                        "Play",
+                    )
+                    .clicked();
+                });
+            }
         }
     }
     crate::autoscroll::row(ui, &response);
@@ -2295,7 +2329,7 @@ pub fn search_field(
     hint: &str,
     width: f32,
 ) -> egui::Response {
-    let height = 34.0;
+    let height = 44.0;
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let has_focus = ui.memory(|memory| memory.has_focus(id));
     let fill = if has_focus {
@@ -2319,7 +2353,7 @@ pub fn search_field(
         .paint_at(ui, icon_rect);
     let field_rect = Rect::from_min_max(
         pos2(rect.left() + 34.0, rect.top() + 1.0),
-        pos2(rect.right() - 30.0, rect.bottom() - 1.0),
+        pos2(rect.right() - 44.0, rect.bottom() - 1.0),
     );
     let mut child = ui.new_child(
         UiBuilder::new()
@@ -2354,8 +2388,8 @@ pub fn search_field(
         .accesskit_node_builder(response.id, |node| node.set_label(hint));
     if !text.is_empty() {
         let clear_rect = Rect::from_center_size(
-            pos2(rect.right() - 17.0, rect.center().y),
-            Vec2::splat(24.0),
+            pos2(rect.right() - 22.0, rect.center().y),
+            Vec2::splat(44.0),
         );
         let mut clear = ui.new_child(
             UiBuilder::new()
@@ -2381,8 +2415,8 @@ pub fn search_field(
 
 /// A toggle drawn as a switch.
 pub fn switch(ui: &mut Ui, palette: &Palette, label: &str, on: &mut bool) -> egui::Response {
-    let size = vec2(40.0, 22.0);
-    let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
+    let (target, mut response) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
+    let rect = Rect::from_center_size(target.center(), vec2(40.0, 22.0));
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -3107,13 +3141,16 @@ mod tests {
                 let context = RowContext::Queue;
                 let mut rect = Rect::NOTHING;
                 let mut id = egui::Id::NULL;
+                let mut time = 0.0;
                 let mut draw = || {
+                    time += 0.25;
                     let mut output = ctx.run_ui(
                         egui::RawInput {
                             screen_rect: Some(Rect::from_min_size(
                                 egui::Pos2::ZERO,
                                 vec2(760.0, 520.0),
                             )),
+                            time: Some(time),
                             events: vec![egui::Event::PointerGone],
                             ..Default::default()
                         },
@@ -3148,6 +3185,7 @@ mod tests {
                     output.textures_delta.clear();
                     output
                 };
+                draw();
                 draw();
                 let output = draw();
                 let fills: Vec<_> = output

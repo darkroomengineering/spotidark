@@ -6,90 +6,9 @@ use std::time::Instant;
 
 use crate::api::models::*;
 
-/// One table row: the playable, when it was added, who added it.
+/// One owned table row used by focused UI tests.
+#[cfg(test)]
 pub type TableItem = (PlayableItem, Option<String>, Option<String>);
-
-/// Cached track-table rows for one page.
-///
-/// Lives on the app, not in egui temp data, so it dies with page eviction,
-/// sign-out, and `reset_data`. A generation token stops a recreated page
-/// from reusing a stale copy that still has the old revision number.
-pub struct TableRowsCache {
-    pub generation: u64,
-    pub items_revision: u64,
-    pub user_names_revision: u64,
-    pub items: Arc<[TableItem]>,
-}
-
-impl TableRowsCache {
-    /// Retained heap for this cache: nested track/episode metadata, not just
-    /// the top-level URI and title.
-    pub fn retained_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self
-                .items
-                .iter()
-                .map(|(item, added, by)| {
-                    playable_retained_bytes(item)
-                        + added.as_ref().map(String::len).unwrap_or(0)
-                        + by.as_ref().map(String::len).unwrap_or(0)
-                })
-                .sum::<usize>()
-    }
-}
-
-fn playable_retained_bytes(item: &PlayableItem) -> usize {
-    match item {
-        PlayableItem::Track(track) => track_retained_bytes(track),
-        PlayableItem::Episode(episode) => episode_retained_bytes(episode),
-    }
-}
-
-fn artist_ref_retained_bytes(artist: &ArtistRef) -> usize {
-    artist.name.len()
-        + artist.id.as_ref().map(String::len).unwrap_or(0)
-        + artist.uri.as_ref().map(String::len).unwrap_or(0)
-}
-
-fn image_retained_bytes(images: &[Image]) -> usize {
-    images.iter().map(|image| image.url.len()).sum()
-}
-
-fn album_retained_bytes(album: &Album) -> usize {
-    album.id.len()
-        + album.name.len()
-        + album.uri.len()
-        + album.album_type.as_ref().map(String::len).unwrap_or(0)
-        + album.release_date.as_ref().map(String::len).unwrap_or(0)
-        + image_retained_bytes(&album.images)
-        + album
-            .artists
-            .iter()
-            .map(artist_ref_retained_bytes)
-            .sum::<usize>()
-}
-
-fn track_retained_bytes(track: &Track) -> usize {
-    std::mem::size_of::<Track>()
-        + track.name.len()
-        + track.uri.len()
-        + track.id.as_ref().map(String::len).unwrap_or(0)
-        + track
-            .artists
-            .iter()
-            .map(artist_ref_retained_bytes)
-            .sum::<usize>()
-        + track.album.as_ref().map(album_retained_bytes).unwrap_or(0)
-}
-
-fn episode_retained_bytes(episode: &Episode) -> usize {
-    std::mem::size_of::<Episode>()
-        + episode.id.len()
-        + episode.name.len()
-        + episode.uri.len()
-        + episode.description.len()
-        + image_retained_bytes(&episode.images)
-}
 
 /// Every screen the central panel can show.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -278,6 +197,49 @@ impl<T> Default for PagedList<T> {
 }
 
 impl<T> PagedList<T> {
+    pub(crate) fn retained_stats(&self, bytes: impl Fn(&T) -> usize) -> (usize, usize) {
+        let rows = self.items.len() + self.windows.values().map(Vec::len).sum::<usize>();
+        let bytes = self
+            .items
+            .iter()
+            .chain(self.windows.values().flatten())
+            .map(bytes)
+            .sum();
+        (rows, bytes)
+    }
+
+    /// Cached jump windows are cold by definition: the active viewport lives
+    /// in `items`. Drop the farthest windows before evicting a whole page.
+    pub(crate) fn trim_cold_windows(
+        &mut self,
+        max_rows: usize,
+        max_bytes: usize,
+        bytes: impl Fn(&T) -> usize + Copy,
+    ) -> bool {
+        if self.loading || self.window_request.is_some() {
+            return false;
+        }
+        let mut changed = false;
+        while !self.windows.is_empty() {
+            let (rows, retained_bytes) = self.retained_stats(bytes);
+            if rows <= max_rows && retained_bytes <= max_bytes {
+                break;
+            }
+            let farthest = self
+                .windows
+                .keys()
+                .max_by_key(|start| start.abs_diff(self.base_offset))
+                .copied()
+                .expect("a cached window exists");
+            self.windows.remove(&farthest);
+            changed = true;
+        }
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
+    }
+
     /// Select a cached window, or reserve a direct request for the visible row.
     /// Adjacent windows merge on arrival, so a viewport can cross page edges.
     pub fn window_at(&mut self, position: u32, size: u32) -> Option<u32> {
@@ -384,9 +346,13 @@ impl<T> PagedList<T> {
         self.loaded_once && self.base_offset == 0 && self.next_offset.is_none()
     }
 
-    pub fn absorb(&mut self, offset: u32, page: Page_<T>) {
+    pub fn absorb<U>(&mut self, offset: u32, page: Page_<U>)
+    where
+        U: Into<T>,
+    {
         let window = self.window_request.take().is_some();
         let next_offset = page.next_offset();
+        let items = page.items.into_iter().map(Into::into).collect();
         if window {
             if self.total.is_some_and(|total| total != page.total) {
                 self.clear_windows();
@@ -395,7 +361,7 @@ impl<T> PagedList<T> {
                 self.save_window();
             }
             self.base_offset = offset;
-            self.items = page.items;
+            self.items = items;
         } else {
             if offset == 0 {
                 self.clear_windows();
@@ -409,7 +375,7 @@ impl<T> PagedList<T> {
             if relative < self.items.len() {
                 self.items.truncate(relative);
             }
-            self.items.extend(page.items);
+            self.items.extend(items);
         }
         self.total = Some(page.total);
         self.next_offset = next_offset;
@@ -543,7 +509,7 @@ impl<T> CursorList<T> {
 pub struct Library {
     pub playlists: Loadable<Vec<Playlist>>,
     pub playlists_next: Option<u32>,
-    pub liked: PagedList<SavedTrack>,
+    pub liked: PagedList<Arc<SavedTrack>>,
     pub albums: PagedList<SavedAlbum>,
     pub artists: CursorList<Artist>,
     pub shows: PagedList<SavedShow>,
@@ -1095,7 +1061,7 @@ mod finite_scroll_tests {
 
     #[test]
     fn a_failed_backward_window_can_retry_from_the_end() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(950, page(950, 50, 1000));
         assert_eq!(list.next_offset, None);
         assert_eq!(list.window_at(920, 50), Some(900));
@@ -1106,7 +1072,7 @@ mod finite_scroll_tests {
 
     #[test]
     fn late_cache_preserves_an_adjacent_request_and_its_cached_tail() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(0, page(0, 50, 1000));
         list.window_at(60, 50);
         list.adopt_cached_prefix((0..500).collect(), 1000, Some(500));
@@ -1118,7 +1084,7 @@ mod finite_scroll_tests {
 
     #[test]
     fn catalog_pages_keep_rows_when_nulls_shorten_a_page() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(0, page(0, 49, 100));
         list.absorb(50, page(50, 50, 100));
         assert_eq!(list.base_offset, 0);
@@ -1128,7 +1094,7 @@ mod finite_scroll_tests {
 
     #[test]
     fn distant_windows_keep_the_total_and_return_without_a_request() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(0, page(0, 50, 1000));
         assert_eq!(list.window_at(720, 50), Some(700));
         assert_eq!(list.total, Some(1000));
@@ -1143,7 +1109,7 @@ mod finite_scroll_tests {
 
     #[test]
     fn adjacent_windows_join_in_both_directions() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(0, page(0, 50, 200));
         assert_eq!(list.window_at(55, 50), Some(50));
         list.absorb(50, page(50, 50, 200));
@@ -1160,7 +1126,7 @@ mod finite_scroll_tests {
 
     #[test]
     fn overlapping_initial_album_page_is_replaced_by_the_full_window() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(0, page(0, 20, 200));
         assert_eq!(list.window_at(25, 50), Some(0));
         list.absorb(0, page(0, 50, 200));
@@ -1172,7 +1138,7 @@ mod finite_scroll_tests {
 
     #[test]
     fn filling_a_partial_window_keeps_existing_rows_visible() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(0, page(0, 49, 1000));
         assert_eq!(list.window_at(49, 50), Some(0));
         assert_eq!(list.items, (0..49).collect::<Vec<_>>());
@@ -1182,7 +1148,7 @@ mod finite_scroll_tests {
 
     #[test]
     fn overlapping_windows_keep_server_positions_after_an_edit() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(701, page(701, 50, 1000));
         assert_eq!(list.window_at(700, 50), Some(700));
         assert_eq!(
@@ -1196,11 +1162,43 @@ mod finite_scroll_tests {
 
     #[test]
     fn failed_window_does_not_retry_every_frame() {
-        let mut list = PagedList::default();
+        let mut list: PagedList<u32> = PagedList::default();
         list.absorb(0, page(0, 50, 200));
         assert_eq!(list.window_at(150, 50), Some(150));
         assert_eq!(list.window_at(150, 50), None);
         list.fail("offline".into());
         assert_eq!(list.window_at(150, 50), None);
+    }
+
+    #[test]
+    fn cold_windows_are_trimmed_before_the_active_rows() {
+        let mut list = PagedList {
+            items: (0..50).collect(),
+            total: Some(1_000),
+            loaded_once: true,
+            ..PagedList::default()
+        };
+        list.windows.insert(100, (100..150).collect());
+        list.windows.insert(700, (700..750).collect());
+        let revision = list.revision;
+        assert!(list.trim_cold_windows(100, usize::MAX, |_| std::mem::size_of::<u32>()));
+        assert_eq!(list.items, (0..50).collect::<Vec<_>>());
+        assert!(list.windows.contains_key(&100));
+        assert!(!list.windows.contains_key(&700));
+        assert_ne!(list.revision, revision);
+    }
+
+    #[test]
+    fn an_in_flight_window_is_never_trimmed() {
+        let mut list = PagedList {
+            items: (0..50).collect(),
+            total: Some(1_000),
+            loading: true,
+            window_request: Some(700),
+            ..PagedList::default()
+        };
+        list.windows.insert(100, (100..150).collect());
+        assert!(!list.trim_cold_windows(50, 1, |_| std::mem::size_of::<u32>()));
+        assert!(list.windows.contains_key(&100));
     }
 }

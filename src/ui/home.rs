@@ -68,7 +68,7 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let available = ui.available_width();
-    let columns = ((available / 300.0).floor() as usize).clamp(2, 4);
+    let columns = ((available / 300.0).floor() as usize).clamp(1, 4);
     let gap = 10.0;
     let tile_width = (available - gap * (columns as f32 - 1.0)) / columns as f32;
     let rows = tiles.len().div_ceil(columns);
@@ -90,12 +90,12 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
                 let (rect, response) =
                     ui.allocate_exact_size(vec2(tile_width, 60.0), Sense::click());
                 if ui.is_rect_visible(rect) {
-                    let hovered = ui.rect_contains_pointer(rect);
-                    let fill = if hovered {
-                        palette.surface_hover
-                    } else {
-                        palette.surface
-                    };
+                    let hovered = ui.rect_contains_pointer(rect) || response.has_focus();
+                    let (hover, press) = theme::control_state(&response);
+                    let fill = palette
+                        .surface
+                        .lerp_to_gamma(palette.surface_hover, hover)
+                        .lerp_to_gamma(palette.surface_active, press * 0.35);
                     ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
                     let cover = Rect::from_min_size(rect.min, Vec2::splat(60.0));
                     if *liked {
@@ -111,7 +111,9 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
                             Some(app.backend.art()),
                         );
                     }
-                    let play_room = if hovered && uri.is_some() { 52.0 } else { 12.0 };
+                    // Keep the action's room reserved so hovering never reflows
+                    // or truncates a title that was fully visible at rest.
+                    let play_room = if uri.is_some() { 52.0 } else { 12.0 };
                     let text_rect = Rect::from_min_max(
                         pos2(cover.right() + 12.0, rect.top()),
                         pos2(rect.right() - play_room, rect.bottom()),
@@ -125,30 +127,40 @@ fn quick_access(app: &mut App, ui: &mut egui::Ui) {
                         theme::bold(14.5),
                         palette.text,
                     );
-                    if hovered && let Some(uri) = uri {
+                    if let Some(uri) = uri {
                         let button = Rect::from_center_size(
                             pos2(rect.right() - 28.0, rect.center().y),
-                            Vec2::splat(40.0),
+                            Vec2::splat(44.0),
                         );
                         let mut child =
                             ui.new_child(egui::UiBuilder::new().max_rect(button).layout(
                                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                             ));
-                        if theme::circle_button(
-                            &mut child,
-                            Icon::PlayFilled,
-                            40.0,
-                            palette.accent,
-                            palette.accent_hover,
-                            palette.on_accent,
-                            "Play",
-                        )
-                        .clicked()
-                        {
-                            app.actions.push(Action::PlayContext {
-                                uri: uri.clone(),
-                                offset_uri: None,
-                                offset_index: None,
+                        let reveal = ui.ctx().animate_bool_with_time(
+                            response.id.with("play-reveal"),
+                            hovered,
+                            theme::motion_time(ui.ctx(), 0.14),
+                        );
+                        child.multiply_opacity(reveal);
+                        if reveal > 0.0 {
+                            child.add_enabled_ui(hovered, |ui| {
+                                if theme::circle_button(
+                                    ui,
+                                    Icon::PlayFilled,
+                                    44.0,
+                                    palette.accent,
+                                    palette.accent_hover,
+                                    palette.on_accent,
+                                    "Play",
+                                )
+                                .clicked()
+                                {
+                                    app.actions.push(Action::PlayContext {
+                                        uri: uri.clone(),
+                                        offset_uri: None,
+                                        offset_index: None,
+                                    });
+                                }
                             });
                         }
                     }

@@ -962,12 +962,10 @@ fn visualiser(app: &mut App, view: &mut View, now: Option<&NowPlaying>) -> bool 
     let sounding = now.is_some_and(|now| (now.playing || now.loading) && now.local);
     match mode {
         VisMode::Bars => {
-            let samples = if sounding {
-                app.winamp.tap.window(vis::FFT_SAMPLES, vis::LAG)
-            } else {
-                vec![0.0; vis::FFT_SAMPLES]
-            };
-            let bars = app.winamp.analyser.step(&samples, Instant::now());
+            let bars =
+                app.winamp
+                    .analyser
+                    .step_tap(&app.winamp.tap, sounding, vis::LAG, Instant::now());
             for (index, bar) in bars.iter().enumerate() {
                 let x = area.x + 4 * index as u32;
                 for row in (vis::ROWS - bar.height)..vis::ROWS {
@@ -987,11 +985,10 @@ fn visualiser(app: &mut App, view: &mut View, now: Option<&NowPlaying>) -> bool 
             sounding || !app.winamp.analyser.settled()
         }
         VisMode::Scope => {
-            let samples = if sounding {
-                app.winamp.tap.window(vis::SCOPE_SAMPLES, vis::LAG)
-            } else {
-                vec![0.0; vis::SCOPE_SAMPLES]
-            };
+            let mut samples = [0.0; vis::SCOPE_SAMPLES];
+            if sounding {
+                app.winamp.tap.fill_window(&mut samples, vis::LAG);
+            }
             let rows = vis::scope(&samples);
             let mut last = rows[0];
             for (x, &y) in rows.iter().enumerate() {

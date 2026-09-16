@@ -179,7 +179,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 let lit = ui.ctx().animate_bool_with_time(
                     egui::Id::new("lyric-line").with(index),
                     is_active,
-                    LIGHT_UP_SECONDS,
+                    theme::motion_time(ui.ctx(), LIGHT_UP_SECONDS),
                 );
                 let color = blend(quiet, palette.accent, lit);
                 let font = if lit > 0.5 {

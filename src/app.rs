@@ -8,8 +8,8 @@ use egui::Color32;
 
 use crate::api::PlayRequest;
 use crate::api::models::{
-    Album, ArtistRef, Device, PlayableItem, PlaybackState, Playlist, PlaylistItem, Queue, Track,
-    TrackCount, User, UserRef, pick_image,
+    Album, ArtistRef, Device, Episode, PlayableItem, PlaybackState, Playlist, PlaylistItem, Queue,
+    Track, TrackCount, User, UserRef, pick_image,
 };
 use crate::backend::{
     ApiRequest, ApiResponse, AuthStatus, Backend, Command, Event, LocalPlayback, LyricsRequest,
@@ -296,8 +296,6 @@ pub struct App {
     album_types_requested: HashSet<String>,
     /// Album URIs positively identified as EPs by librespot.
     confirmed_ep_albums: HashSet<String>,
-    /// Built table rows, keyed by page. Capped; dropped on reset and eviction.
-    pub table_rows: HashMap<Page, TableRowsCache>,
     page_used: HashMap<Page, Instant>,
     track_used: HashMap<String, Instant>,
 
@@ -318,7 +316,7 @@ pub struct App {
     /// Optimistic library writes that a stale contains response must not undo.
     saved_writes: HashMap<String, bool>,
     pub accents: HashMap<String, Color32>,
-    accent_pending: HashSet<String>,
+    accent_pending: HashMap<String, Instant>,
 
     pub dialog: Option<Dialog>,
     cover_request: u64,
@@ -450,8 +448,11 @@ pub struct App {
     /// The account's playlist tree from Spotify, folders and all; empty
     /// until the session answers.
     pub rootlist: Vec<crate::player::RootlistEntry>,
-    /// Last good tree and the account it belongs to, kept across restarts.
+    /// A restored tree waiting for `Me` to verify its account. Live trees use
+    /// `rootlist` as their sole owner and are cloned only while saving.
     rootlist_cache: Option<CachedRootlist>,
+    rootlist_account: Option<String>,
+    rootlist_fresh: bool,
     /// Playlists the account may add songs to by Spotify's own word, by
     /// URI: the ones shared with it by invitation, which the Web API's
     /// collaborative flag does not show. Empty until the session answers.
@@ -657,7 +658,6 @@ impl App {
             track_requests: HashSet::new(),
             album_types_requested: HashSet::new(),
             confirmed_ep_albums: HashSet::new(),
-            table_rows: HashMap::new(),
             page_used: HashMap::new(),
             track_used: HashMap::new(),
             history: vec![first_page],
@@ -669,7 +669,7 @@ impl App {
             saved_recordings: HashSet::new(),
             saved_writes: HashMap::new(),
             accents: HashMap::new(),
-            accent_pending: HashSet::new(),
+            accent_pending: HashMap::new(),
             dialog: None,
             cover_request: 0,
             cover_uploads: HashMap::new(),
@@ -748,6 +748,8 @@ impl App {
             pending_queue_adds: Vec::new(),
             rootlist: Vec::new(),
             rootlist_cache: session.rootlist.clone(),
+            rootlist_account: None,
+            rootlist_fresh: false,
             editable_by_grant: std::collections::BTreeSet::new(),
             pending_link: None,
             collapsed_folders: session.collapsed_folders.clone(),
@@ -782,6 +784,7 @@ impl App {
     pub fn attach(&mut self, ctx: &egui::Context) {
         theme::install(ctx);
         ctx.add_bytes_loader(std::sync::Arc::new(self.backend.art().clone()));
+        ctx.add_image_loader(std::sync::Arc::new(self.backend.art().image_loader()));
         ctx.set_theme(self.theme_preference());
         self.applied_dark = None;
         self.winamp.forget_textures();
@@ -878,6 +881,10 @@ impl App {
 
     pub fn user_id(&self) -> Option<&str> {
         self.user.as_ref().map(|user| user.id.as_str())
+    }
+
+    pub(crate) fn liked_generation(&self) -> u64 {
+        self.liked_songs.generation
     }
 
     /// The library list's entry for a playlist, when it holds one.
@@ -1414,7 +1421,8 @@ impl App {
         if let Some(color) = self.accents.get(url) {
             return Some(*color);
         }
-        if self.accent_pending.insert(url.to_string()) {
+        if !self.accent_pending.contains_key(url) {
+            self.accent_pending.insert(url.to_string(), Instant::now());
             self.backend.send(Command::Accent {
                 url: url.to_string(),
             });
@@ -1506,22 +1514,18 @@ impl App {
                 Event::Error(message) => self.toast_error(message),
                 Event::Rootlist { result } => match result {
                     Ok(rootlist) => {
-                        let account_id = self.user_id().map(str::to_owned).or_else(|| {
-                            if let AuthStatus::Connected { username } = &self.auth {
-                                Some(username.clone())
-                            } else {
-                                None
-                            }
-                        });
+                        // A connected username is not necessarily the Web API
+                        // account id. Keep ownership unknown until `Me` when
+                        // the rootlist arrives before the profile.
+                        let account_id = self.user_id().map(str::to_owned);
                         self.rootlist = rootlist.entries;
                         self.editable_by_grant = rootlist.editable;
                         if let Some(account_id) = account_id {
-                            self.rootlist_cache = Some(CachedRootlist {
-                                account_id,
-                                entries: self.rootlist.clone(),
-                            });
-                            self.session_dirty = true;
+                            self.rootlist_account = Some(account_id);
                         }
+                        self.rootlist_cache = None;
+                        self.rootlist_fresh = true;
+                        self.session_dirty = true;
                     }
                     Err(error) => log::warn!("rootlist unavailable: {error}"),
                 },
@@ -1647,6 +1651,8 @@ impl App {
                 self.remote = None;
                 self.rootlist.clear();
                 self.rootlist_cache = None;
+                self.rootlist_account = None;
+                self.rootlist_fresh = false;
                 self.editable_by_grant.clear();
                 self.session_dirty = true;
                 self.reset_data();
@@ -1717,56 +1723,8 @@ impl App {
         self.search.catalogue_pending = false;
         self.search.playlists_pending = false;
         self.search.error = None;
-        self.table_rows.clear();
         self.page_used.clear();
         self.track_used.clear();
-    }
-
-    /// Drop table-row caches whose pages are gone, and cap what remains.
-    pub fn retain_table_rows(&mut self, current: &Page) {
-        const MAX_TABLE_ROW_CACHES: usize = 2;
-        self.table_rows.retain(|page, _| {
-            page == current
-                || match page {
-                    Page::Playlist(id) => self.playlist_pages.contains_key(id),
-                    Page::Album(id) => self.album_pages.contains_key(id),
-                    Page::LikedSongs | Page::TopSongs => true,
-                    _ => false,
-                }
-        });
-        if self.table_rows.len() <= MAX_TABLE_ROW_CACHES {
-            return;
-        }
-        let mut keep = HashSet::from([current.clone()]);
-        if let Some(page) = self.history.get(self.history_index) {
-            keep.insert(page.clone());
-        }
-        if self.history_index > 0
-            && let Some(page) = self.history.get(self.history_index - 1)
-        {
-            keep.insert(page.clone());
-        }
-        self.table_rows.retain(|page, _| keep.contains(page));
-        while self.table_rows.len() > MAX_TABLE_ROW_CACHES {
-            let drop = self
-                .table_rows
-                .keys()
-                .find(|page| *page != current)
-                .cloned();
-            match drop {
-                Some(page) => {
-                    self.table_rows.remove(&page);
-                }
-                None => break,
-            }
-        }
-    }
-
-    pub fn table_rows_retained_bytes(&self) -> usize {
-        self.table_rows
-            .values()
-            .map(TableRowsCache::retained_bytes)
-            .sum()
     }
 
     fn handle_local(&mut self, state: LocalState) {
@@ -4168,13 +4126,31 @@ impl App {
                         self.dialog = Some(Dialog::PremiumNeeded);
                     }
                     if self.user_id() != Some(user.id.as_str()) {
-                        self.rootlist = self
+                        if self.rootlist_fresh {
+                            match self.rootlist_account.as_deref() {
+                                None => self.rootlist_account = Some(user.id.clone()),
+                                Some(owner) if owner == user.id => {}
+                                Some(_) => {
+                                    self.rootlist.clear();
+                                    self.rootlist_account = None;
+                                    self.rootlist_fresh = false;
+                                    self.editable_by_grant.clear();
+                                }
+                            }
+                        } else if self
                             .rootlist_cache
                             .as_ref()
-                            .filter(|cached| cached.account_id == user.id)
-                            .map(|cached| cached.entries.clone())
-                            .unwrap_or_default();
-                        self.editable_by_grant.clear();
+                            .is_some_and(|cached| cached.account_id == user.id)
+                        {
+                            let cached = self.rootlist_cache.take().expect("matching cache");
+                            self.rootlist = cached.entries;
+                            self.rootlist_account = Some(cached.account_id);
+                            self.editable_by_grant.clear();
+                        } else {
+                            self.rootlist.clear();
+                            self.rootlist_account = None;
+                            self.editable_by_grant.clear();
+                        }
                     }
                     self.user = Some(user);
                     let page = self.page().clone();
@@ -5387,7 +5363,6 @@ impl App {
         self.touch_page(&page);
         if *self.page() == page {
             self.ensure_loaded(page.clone());
-            self.retain_table_rows(&page);
             return;
         }
         self.history.truncate(self.history_index + 1);
@@ -5398,7 +5373,6 @@ impl App {
         self.history_index = self.history.len() - 1;
         self.show_devices = false;
         self.ensure_loaded(page.clone());
-        self.retain_table_rows(&page);
         self.evict_stale_pages();
     }
 
@@ -5479,10 +5453,10 @@ impl App {
         Some(track)
     }
 
-    /// Drops page caches that exceed the cap, keeping the open page, the
-    /// playing context, and the most recently used pages. History does not
-    /// protect a page from the cap. Track metadata is an LRU of 800.
-    /// Table-row copies of dropped playlist and album pages go with them.
+    /// Drops page caches that exceed the row, byte, or page caps, keeping the
+    /// open page, playing context, pending edits, and selection. History and
+    /// sort preferences do not protect a cold completed page. Track metadata
+    /// is an LRU of 800.
     fn evict_stale_pages(&mut self) {
         const MAX_PLAYLIST_PAGES: usize = 12;
         const MAX_ALBUM_PAGES: usize = 16;
@@ -5514,6 +5488,23 @@ impl App {
             }
             _ => {}
         }
+        if let Some((page, _, _)) = &self.selection {
+            match page {
+                Page::Playlist(id) => {
+                    protected_playlists.insert(id.clone());
+                }
+                Page::Album(id) => {
+                    protected_albums.insert(id.clone());
+                }
+                Page::Artist(id) => {
+                    protected_artists.insert(id.clone());
+                }
+                Page::Show(id) => {
+                    protected_shows.insert(id.clone());
+                }
+                _ => {}
+            }
+        }
         if let Some(uri) = self.playing_context_uri()
             && let Some(kind) = util::uri_kind(&uri)
             && let Some(id) = util::uri_id(&uri)
@@ -5534,6 +5525,12 @@ impl App {
                 _ => {}
             }
         }
+        self.trim_catalogue_windows(
+            &protected_playlists,
+            &protected_albums,
+            &protected_artists,
+            &protected_shows,
+        );
         evict_lru_map(
             &mut self.playlist_pages,
             &self.page_used,
@@ -5562,6 +5559,12 @@ impl App {
             &protected_shows,
             MAX_SHOW_PAGES,
         );
+        self.enforce_catalogue_budget(
+            &protected_playlists,
+            &protected_albums,
+            &protected_artists,
+            &protected_shows,
+        );
         self.page_used.retain(|page, _| match page {
             Page::Playlist(id) => self.playlist_pages.contains_key(id),
             Page::Album(id) => self.album_pages.contains_key(id),
@@ -5587,8 +5590,280 @@ impl App {
                 self.track_used.remove(&id);
             }
         }
-        let current = self.page().clone();
-        self.retain_table_rows(&current);
+        self.prune_secondary_caches();
+    }
+
+    fn prune_secondary_caches(&mut self) {
+        const MAX_ACCENTS: usize = 256;
+        const MAX_USER_NAMES: usize = 512;
+        const MAX_ALBUM_TYPES: usize = 512;
+        const ACCENT_IN_FLIGHT: Duration = Duration::from_secs(30);
+
+        let mut protected_art: HashSet<String> = self
+            .now_playing()
+            .into_iter()
+            .flat_map(|now| [now.art_url, now.art_small])
+            .flatten()
+            .collect();
+        for page in self.playlist_pages.values() {
+            if let Some(playlist) = page.playlist.get() {
+                protected_art.extend(playlist.images.iter().map(|image| image.url.clone()));
+            }
+        }
+        for page in self.album_pages.values() {
+            if let Some(album) = page.album.get() {
+                protected_art.extend(album.images.iter().map(|image| image.url.clone()));
+            }
+        }
+        for page in self.artist_pages.values() {
+            if let Some(artist) = page.artist.get() {
+                protected_art.extend(artist.images.iter().map(|image| image.url.clone()));
+            }
+        }
+        for page in self.show_pages.values() {
+            if let Some(show) = page.show.get() {
+                protected_art.extend(show.images.iter().map(|image| image.url.clone()));
+            }
+        }
+        if self.accents.len() > MAX_ACCENTS {
+            let mut victims: Vec<_> = self
+                .accents
+                .keys()
+                .filter(|url| !protected_art.contains(*url))
+                .cloned()
+                .collect();
+            victims.sort();
+            let remove = self.accents.len().saturating_sub(MAX_ACCENTS);
+            for url in victims.into_iter().take(remove) {
+                self.accents.remove(&url);
+            }
+        }
+        if self.accent_pending.len() > MAX_ACCENTS {
+            let mut victims: Vec<_> = self
+                .accent_pending
+                .iter()
+                .filter(|(url, since)| {
+                    !protected_art.contains(*url) && since.elapsed() >= ACCENT_IN_FLIGHT
+                })
+                .map(|(url, since)| (*since, url.clone()))
+                .collect();
+            victims.sort();
+            let remove = self.accent_pending.len().saturating_sub(MAX_ACCENTS);
+            for (_, url) in victims.into_iter().take(remove) {
+                self.accent_pending.remove(&url);
+            }
+        }
+
+        let protected_users: HashSet<String> = self
+            .playlist_pages
+            .values()
+            .flat_map(|page| {
+                page.contributors.iter().cloned().chain(
+                    page.items
+                        .items
+                        .iter()
+                        .chain(page.items.windows.values().flatten())
+                        .filter_map(|row| row.added_by.as_ref()?.id.clone()),
+                )
+            })
+            .collect();
+        if self.user_names.len() > MAX_USER_NAMES {
+            let mut victims: Vec<_> = self
+                .user_names
+                .iter()
+                .filter(|(id, _)| !protected_users.contains(id.as_str()))
+                .map(|(id, _)| id.clone())
+                .collect();
+            victims.sort();
+            let remove = self.user_names.len().saturating_sub(MAX_USER_NAMES);
+            for id in victims.into_iter().take(remove) {
+                self.user_names.remove(&id);
+            }
+        }
+
+        let protected_albums: HashSet<String> = self
+            .album_pages
+            .keys()
+            .map(|id| format!("spotify:album:{id}"))
+            .chain(
+                self.library
+                    .albums
+                    .items
+                    .iter()
+                    .map(|saved| saved.album.uri.clone()),
+            )
+            .chain(self.artist_pages.values().flat_map(|page| {
+                page.albums.values().flat_map(|albums| {
+                    albums
+                        .items
+                        .iter()
+                        .chain(albums.windows.values().flatten())
+                        .map(|album| album.uri.clone())
+                })
+            }))
+            .collect();
+        if self.album_types_requested.len() > MAX_ALBUM_TYPES {
+            let mut victims: Vec<_> = self
+                .album_types_requested
+                .iter()
+                .filter(|uri| !protected_albums.contains(uri.as_str()))
+                .cloned()
+                .collect();
+            victims.sort();
+            let remove = self
+                .album_types_requested
+                .len()
+                .saturating_sub(MAX_ALBUM_TYPES);
+            for uri in victims.into_iter().take(remove) {
+                self.album_types_requested.remove(&uri);
+                self.confirmed_ep_albums.remove(&uri);
+            }
+        }
+    }
+
+    fn trim_catalogue_windows(
+        &mut self,
+        protected_playlists: &HashSet<String>,
+        protected_albums: &HashSet<String>,
+        protected_artists: &HashSet<String>,
+        protected_shows: &HashSet<String>,
+    ) {
+        const WINDOW_ROWS: usize = 1_200;
+        const WINDOW_BYTES: usize = 16 * 1024 * 1024;
+        for (id, page) in &mut self.playlist_pages {
+            if protected_playlists.contains(id)
+                || !page.filter.trim().is_empty()
+                || self.table_sorts.contains_key(&Page::Playlist(id.clone()))
+            {
+                continue;
+            }
+            page.items
+                .trim_cold_windows(WINDOW_ROWS, WINDOW_BYTES, playlist_item_retained_bytes);
+        }
+        for (id, page) in &mut self.album_pages {
+            if protected_albums.contains(id)
+                || self.table_sorts.contains_key(&Page::Album(id.clone()))
+            {
+                continue;
+            }
+            page.tracks
+                .trim_cold_windows(WINDOW_ROWS, WINDOW_BYTES, track_retained_bytes);
+        }
+        for (id, page) in &mut self.artist_pages {
+            if protected_artists.contains(id) {
+                continue;
+            }
+            for albums in page.albums.values_mut() {
+                albums.trim_cold_windows(WINDOW_ROWS, WINDOW_BYTES, album_retained_bytes);
+            }
+        }
+        for (id, page) in &mut self.show_pages {
+            if protected_shows.contains(id) {
+                continue;
+            }
+            page.episodes
+                .trim_cold_windows(WINDOW_ROWS, WINDOW_BYTES, episode_retained_bytes);
+        }
+    }
+
+    fn catalogue_retained_stats(&self) -> (usize, usize) {
+        let mut total = (0usize, 0usize);
+        let mut add = |stats: (usize, usize)| {
+            total.0 += stats.0;
+            total.1 += stats.1;
+        };
+        for page in self.playlist_pages.values() {
+            add(page.items.retained_stats(playlist_item_retained_bytes));
+        }
+        for page in self.album_pages.values() {
+            add(page.tracks.retained_stats(track_retained_bytes));
+        }
+        for page in self.artist_pages.values() {
+            if let Some(tracks) = page.top_tracks.get() {
+                add((tracks.len(), tracks.iter().map(track_retained_bytes).sum()));
+            }
+            for albums in page.albums.values() {
+                add(albums.retained_stats(album_retained_bytes));
+            }
+        }
+        for page in self.show_pages.values() {
+            add(page.episodes.retained_stats(episode_retained_bytes));
+        }
+        total
+    }
+
+    fn enforce_catalogue_budget(
+        &mut self,
+        protected_playlists: &HashSet<String>,
+        protected_albums: &HashSet<String>,
+        protected_artists: &HashSet<String>,
+        protected_shows: &HashSet<String>,
+    ) {
+        const MAX_ROWS: usize = 6_000;
+        const MAX_BYTES: usize = 64 * 1024 * 1024;
+        loop {
+            let (rows, bytes) = self.catalogue_retained_stats();
+            if rows <= MAX_ROWS && bytes <= MAX_BYTES {
+                break;
+            }
+            let mut victims = Vec::new();
+            victims.extend(
+                self.playlist_pages
+                    .keys()
+                    .filter(|id| !protected_playlists.contains(*id))
+                    .map(|id| {
+                        let page = Page::Playlist(id.clone());
+                        (self.page_used.get(&page).copied(), page)
+                    }),
+            );
+            victims.extend(
+                self.album_pages
+                    .keys()
+                    .filter(|id| !protected_albums.contains(*id))
+                    .map(|id| {
+                        let page = Page::Album(id.clone());
+                        (self.page_used.get(&page).copied(), page)
+                    }),
+            );
+            victims.extend(
+                self.artist_pages
+                    .keys()
+                    .filter(|id| !protected_artists.contains(*id))
+                    .map(|id| {
+                        let page = Page::Artist(id.clone());
+                        (self.page_used.get(&page).copied(), page)
+                    }),
+            );
+            victims.extend(
+                self.show_pages
+                    .keys()
+                    .filter(|id| !protected_shows.contains(*id))
+                    .map(|id| {
+                        let page = Page::Show(id.clone());
+                        (self.page_used.get(&page).copied(), page)
+                    }),
+            );
+            victims.sort_by_key(|(used, _)| *used);
+            let Some((_, victim)) = victims.into_iter().next() else {
+                break;
+            };
+            match &victim {
+                Page::Playlist(id) => {
+                    self.playlist_pages.remove(id);
+                }
+                Page::Album(id) => {
+                    self.album_pages.remove(id);
+                }
+                Page::Artist(id) => {
+                    self.artist_pages.remove(id);
+                }
+                Page::Show(id) => {
+                    self.show_pages.remove(id);
+                }
+                _ => unreachable!("catalogue victim"),
+            }
+            self.page_used.remove(&victim);
+        }
     }
 
     // ---- playback --------------------------------------------------------------
@@ -6800,7 +7075,6 @@ impl App {
                     let page = self.page().clone();
                     self.touch_page(&page);
                     self.ensure_loaded(page.clone());
-                    self.retain_table_rows(&page);
                     self.evict_stale_pages();
                 }
             }
@@ -6810,7 +7084,6 @@ impl App {
                     let page = self.page().clone();
                     self.touch_page(&page);
                     self.ensure_loaded(page.clone());
-                    self.retain_table_rows(&page);
                     self.evict_stale_pages();
                 }
             }
@@ -7455,7 +7728,15 @@ impl App {
             }
             Action::PauseLyricsFollow => self.lyrics_following = false,
             Action::RetryLyrics => self.request_lyrics(),
-            Action::ToggleLyricsMotion => self.lyrics_reduce_motion = !self.lyrics_reduce_motion,
+            Action::ToggleLyricsMotion => {
+                self.settings.motion = if self.lyrics_reduce_motion {
+                    crate::settings::MotionPreference::Full
+                } else {
+                    crate::settings::MotionPreference::Reduced
+                };
+                self.lyrics_reduce_motion = !self.lyrics_reduce_motion;
+                self.settings_dirty = true;
+            }
             Action::ToggleDevicesPopup => {
                 self.show_devices = !self.show_devices;
                 if self.show_devices {
@@ -8311,7 +8592,14 @@ impl App {
                 last_track: self.resume_track.clone(),
                 last_position_ms: self.resume_position_ms,
                 collapsed_folders: self.collapsed_folders.clone(),
-                rootlist: self.rootlist_cache.clone(),
+                rootlist: self
+                    .rootlist_account
+                    .as_ref()
+                    .map(|account_id| CachedRootlist {
+                        account_id: account_id.clone(),
+                        entries: self.rootlist.clone(),
+                    })
+                    .or_else(|| self.rootlist_cache.clone()),
                 last_added_queue: if self.resume_queue.is_empty() {
                     self.manual_queue.clone()
                 } else {
@@ -8456,14 +8744,7 @@ impl App {
                     _ => None,
                 })
             })
-            .or_else(|| {
-                self.table_rows.values().find_map(|table| {
-                    table.items.iter().find_map(|(item, _, _)| match item {
-                        PlayableItem::Track(track) if track.uri == uri => Some(track.clone()),
-                        _ => None,
-                    })
-                })
-            })
+            .or_else(|| self.catalogue_track(uri))
             .or_else(|| {
                 self.home
                     .top_tracks
@@ -8489,6 +8770,59 @@ impl App {
             self.backend.api(ApiRequest::Track { id: id.to_string() });
         }
         true
+    }
+
+    fn catalogue_track(&self, uri: &str) -> Option<Track> {
+        self.playlist_pages
+            .values()
+            .flat_map(|page| {
+                page.items
+                    .items
+                    .iter()
+                    .chain(page.items.windows.values().flatten())
+            })
+            .find_map(|row| match row.playable()? {
+                PlayableItem::Track(track) if track.uri == uri => Some(track.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                self.album_pages.values().find_map(|page| {
+                    let mut track = page
+                        .tracks
+                        .items
+                        .iter()
+                        .chain(page.tracks.windows.values().flatten())
+                        .find(|track| track.uri == uri)?
+                        .clone();
+                    if track.album.is_none()
+                        && let Some(album) = page.album.get()
+                    {
+                        track.album = Some(Album {
+                            id: album.id.clone(),
+                            name: album.name.clone(),
+                            uri: album.uri.clone(),
+                            images: album.images.clone(),
+                            ..Album::default()
+                        });
+                    }
+                    Some(track)
+                })
+            })
+            .or_else(|| {
+                self.home
+                    .top_songs
+                    .get()
+                    .and_then(|tracks| tracks.iter().find(|track| track.uri == uri).cloned())
+            })
+            .or_else(|| {
+                self.artist_pages.values().find_map(|page| {
+                    page.top_tracks
+                        .get()?
+                        .iter()
+                        .find(|track| track.uri == uri)
+                        .cloned()
+                })
+            })
     }
 }
 
@@ -8729,6 +9063,96 @@ fn cap_uris(uris: &[String], index: u32) -> (Vec<String>, u32) {
     let start = (index as usize).min(uris.len().saturating_sub(1));
     let end = (start + MAX).min(uris.len());
     (uris[start..end].to_vec(), 0)
+}
+
+fn option_string_bytes(value: &Option<String>) -> usize {
+    value.as_ref().map(String::len).unwrap_or(0)
+}
+
+fn album_retained_bytes(album: &Album) -> usize {
+    std::mem::size_of::<Album>()
+        + album.id.len()
+        + album.name.len()
+        + album.uri.len()
+        + option_string_bytes(&album.album_type)
+        + option_string_bytes(&album.album_group)
+        + option_string_bytes(&album.release_date)
+        + option_string_bytes(&album.label)
+        + album
+            .images
+            .iter()
+            .map(|image| image.url.len())
+            .sum::<usize>()
+        + album
+            .artists
+            .iter()
+            .map(|artist| {
+                artist.name.len()
+                    + option_string_bytes(&artist.id)
+                    + option_string_bytes(&artist.uri)
+            })
+            .sum::<usize>()
+        + album.genres.iter().map(String::len).sum::<usize>()
+}
+
+fn track_retained_bytes(track: &Track) -> usize {
+    std::mem::size_of::<Track>()
+        + option_string_bytes(&track.id)
+        + track.name.len()
+        + track.uri.len()
+        + track
+            .artists
+            .iter()
+            .map(|artist| {
+                artist.name.len()
+                    + option_string_bytes(&artist.id)
+                    + option_string_bytes(&artist.uri)
+            })
+            .sum::<usize>()
+        + track.album.as_ref().map(album_retained_bytes).unwrap_or(0)
+        + option_string_bytes(&track.external_ids.isrc)
+        + track
+            .linked_from
+            .as_ref()
+            .map(|linked| option_string_bytes(&linked.id) + linked.uri.len())
+            .unwrap_or(0)
+}
+
+fn episode_retained_bytes(episode: &Episode) -> usize {
+    std::mem::size_of::<Episode>()
+        + episode.id.len()
+        + episode.name.len()
+        + episode.uri.len()
+        + episode.description.len()
+        + option_string_bytes(&episode.release_date)
+        + episode
+            .images
+            .iter()
+            .map(|image| image.url.len())
+            .sum::<usize>()
+}
+
+fn playable_retained_bytes(item: &PlayableItem) -> usize {
+    match item {
+        PlayableItem::Track(track) => track_retained_bytes(track),
+        PlayableItem::Episode(episode) => episode_retained_bytes(episode),
+    }
+}
+
+fn playlist_item_retained_bytes(item: &PlaylistItem) -> usize {
+    std::mem::size_of::<PlaylistItem>()
+        + option_string_bytes(&item.added_at)
+        + item
+            .added_by
+            .as_ref()
+            .map(|user| option_string_bytes(&user.id))
+            .unwrap_or(0)
+        + item.item.as_ref().map(playable_retained_bytes).unwrap_or(0)
+        + item
+            .track
+            .as_ref()
+            .map(playable_retained_bytes)
+            .unwrap_or(0)
 }
 
 fn evict_lru_map<V>(
@@ -9372,27 +9796,14 @@ mod tests {
     }
 
     fn shown_availability(app: &mut App, id: &str) -> Option<bool> {
-        let page = &app.playlist_pages[id];
-        let generation = page.generation;
-        let revision = page.items.revision;
-        let rows = page
+        app.playlist_pages[id]
             .items
             .items
             .iter()
-            .filter_map(|row| row.playable().cloned().map(|item| (item, None, None)))
-            .collect();
-        let rows = crate::ui::collection::cached_table_items(
-            app,
-            Page::Playlist(id.into()),
-            generation,
-            revision,
-            app.user_names_revision,
-            || rows,
-        );
-        match &rows[0].0 {
-            PlayableItem::Track(track) => track.is_playable,
-            _ => panic!("a track row"),
-        }
+            .find_map(|row| match row.playable()? {
+                PlayableItem::Track(track) => track.is_playable,
+                PlayableItem::Episode(_) => None,
+            })
     }
 
     fn old_availability_cache(playable: bool) -> Option<PlaylistCache> {
@@ -13836,41 +14247,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_data_drops_table_row_caches() {
-        let mut app = headless_app();
-        crate::ui::collection::cached_table_items(&mut app, Page::LikedSongs, 0, 0, 0, || {
-            vec![(
-                PlayableItem::Track(Track {
-                    name: "Hold".into(),
-                    uri: "spotify:track:hold".into(),
-                    ..Track::default()
-                }),
-                None,
-                None,
-            )]
-        });
-        assert!(!app.table_rows.is_empty());
-        app.reset_data();
-        assert!(app.table_rows.is_empty());
-        crate::ui::collection::cached_table_items(&mut app, Page::LikedSongs, 0, 0, 0, || {
-            vec![(
-                PlayableItem::Track(Track {
-                    name: "Fresh".into(),
-                    uri: "spotify:track:fresh".into(),
-                    ..Track::default()
-                }),
-                None,
-                None,
-            )]
-        });
-        let name = app.table_rows[&Page::LikedSongs].items[0].0.name();
-        assert_eq!(
-            name, "Fresh",
-            "reused revision 0 must not keep the old rows"
-        );
-    }
-
-    #[test]
     fn track_cache_is_an_lru_of_eight_hundred() {
         let mut app = headless_app();
         for i in 0..900 {
@@ -13886,6 +14262,154 @@ mod tests {
             "a cache hit must keep that track"
         );
         assert!(!app.track_cache.contains_key("t0"));
+    }
+
+    #[test]
+    fn catalogue_budget_evicts_cold_pages_and_keeps_the_open_page() {
+        let mut app = headless_app();
+        app.history = vec![Page::Playlist("open".into())];
+        app.history_index = 0;
+        for id in ["open", "cold-a", "cold-b"] {
+            app.playlist_pages.insert(
+                id.into(),
+                PlaylistPage {
+                    items: PagedList {
+                        items: vec![PlaylistItem::default(); 3_000],
+                        total: Some(3_000),
+                        loaded_once: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+        }
+        app.table_sorts.insert(
+            Page::Playlist("cold-a".into()),
+            TableSort {
+                column: SortColumn::Title,
+                ascending: true,
+            },
+        );
+        app.table_sorts.insert(
+            Page::Playlist("cold-b".into()),
+            TableSort {
+                column: SortColumn::Added,
+                ascending: false,
+            },
+        );
+        app.evict_stale_pages();
+        assert!(app.playlist_pages.contains_key("open"));
+        assert!(app.catalogue_retained_stats().0 <= 6_000);
+        assert!(app.playlist_pages.len() <= 2);
+    }
+
+    #[test]
+    fn catalogue_budget_counts_large_row_metadata() {
+        let mut app = headless_app();
+        app.history = vec![Page::Show("open".into())];
+        app.history_index = 0;
+        app.show_pages
+            .insert("open".into(), crate::model::ShowPage::default());
+        app.show_pages.insert(
+            "cold".into(),
+            crate::model::ShowPage {
+                episodes: PagedList {
+                    items: vec![Episode {
+                        description: "x".repeat(65 * 1024 * 1024),
+                        ..Episode::default()
+                    }],
+                    loaded_once: true,
+                    ..PagedList::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        app.evict_stale_pages();
+
+        assert!(app.show_pages.contains_key("open"));
+        assert!(!app.show_pages.contains_key("cold"));
+        assert!(app.catalogue_retained_stats().1 <= 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn secondary_cache_caps_keep_retained_page_metadata() {
+        let mut app = headless_app();
+        let protected_art = "art-keep".to_string();
+        let past_track_art = "cold-art-000".to_string();
+        let protected_album = "spotify:album:keep".to_string();
+        let protected_user = "user-keep".to_string();
+        app.playlist_pages.insert(
+            "playlist".into(),
+            PlaylistPage {
+                contributors: [protected_user.clone()].into_iter().collect(),
+                ..Default::default()
+            },
+        );
+        app.artist_pages.insert(
+            "artist".into(),
+            crate::model::ArtistPage {
+                artist: Loadable::Loaded(crate::api::models::Artist {
+                    images: vec![Image {
+                        url: protected_art.clone(),
+                        ..Image::default()
+                    }],
+                    ..Default::default()
+                }),
+                albums: [(
+                    "all".into(),
+                    PagedList {
+                        items: vec![Album {
+                            uri: protected_album.clone(),
+                            images: vec![Image {
+                                url: past_track_art.clone(),
+                                ..Image::default()
+                            }],
+                            ..Album::default()
+                        }],
+                        loaded_once: true,
+                        ..PagedList::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+        );
+        for index in 0..600 {
+            let key = format!("cold-{index:03}");
+            app.user_names.insert(key.clone(), None);
+            app.album_types_requested
+                .insert(format!("spotify:album:{key}"));
+            app.confirmed_ep_albums
+                .insert(format!("spotify:album:{key}"));
+        }
+        app.user_names.insert(protected_user.clone(), None);
+        app.album_types_requested.insert(protected_album.clone());
+        app.confirmed_ep_albums.insert(protected_album.clone());
+        for index in 0..300 {
+            let url = format!("cold-art-{index:03}");
+            app.accents.insert(url.clone(), Color32::BLACK);
+            app.accent_pending
+                .insert(url, Instant::now() - Duration::from_secs(31));
+        }
+        app.accents.insert(protected_art.clone(), Color32::BLACK);
+        app.accent_pending.insert(
+            protected_art.clone(),
+            Instant::now() - Duration::from_secs(31),
+        );
+
+        app.prune_secondary_caches();
+
+        assert!(app.user_names.len() <= 512);
+        assert!(app.user_names.contains_key(&protected_user));
+        assert!(app.accents.len() <= 256 && app.accents.contains_key(&protected_art));
+        assert!(app.accent_pending.len() <= 256 && app.accent_pending.contains_key(&protected_art));
+        assert!(!app.accents.contains_key(&past_track_art));
+        assert!(!app.accent_pending.contains_key(&past_track_art));
+        assert!(app.album_types_requested.len() <= 512);
+        assert!(app.album_types_requested.contains(&protected_album));
+        assert!(app.confirmed_ep_albums.contains(&protected_album));
     }
 
     #[test]
@@ -13970,42 +14494,6 @@ mod tests {
         assert!(
             !app.track_cache.contains_key("decoy"),
             "an untouched cached track can go"
-        );
-    }
-
-    #[test]
-    fn evict_stale_pages_drops_table_row_copies() {
-        let mut app = headless_app();
-        for i in 0..12 {
-            seed_playlist(&mut app, &format!("pl{i}"));
-        }
-        crate::ui::collection::cached_table_items(
-            &mut app,
-            Page::Playlist("pl0".into()),
-            0,
-            0,
-            0,
-            || {
-                vec![(
-                    PlayableItem::Track(Track {
-                        name: "Old".into(),
-                        uri: "spotify:track:old".into(),
-                        ..Track::default()
-                    }),
-                    None,
-                    None,
-                )]
-            },
-        );
-        assert!(app.table_rows.contains_key(&Page::Playlist("pl0".into())));
-        seed_playlist(&mut app, "pl12");
-        assert!(
-            !app.playlist_pages.contains_key("pl0"),
-            "the oldest playlist page is dropped"
-        );
-        assert!(
-            !app.table_rows.contains_key(&Page::Playlist("pl0".into())),
-            "its table-row copy must go with it"
         );
     }
 
@@ -15981,6 +16469,7 @@ mod tests {
                             track: track.clone(),
                             added_at: None,
                         })
+                        .map(std::sync::Arc::new)
                         .collect();
                     app.library.liked.total = Some(5);
                     app.library.liked.next_offset = None;
@@ -17578,6 +18067,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn a_fresh_playlist_tree_is_never_relabelled_to_another_account() {
+        let tree = || crate::player::Rootlist {
+            entries: vec![crate::player::RootlistEntry::Playlist(
+                "spotify:playlist:shared".into(),
+            )],
+            editable: ["spotify:playlist:shared".to_string()]
+                .into_iter()
+                .collect(),
+        };
+
+        let mut known = headless_app();
+        known.user = Some(User {
+            id: "account-a".into(),
+            ..User::default()
+        });
+        known.handle_backend_events(vec![Event::Rootlist { result: Ok(tree()) }]);
+        known.handle_api(ApiResponse::Me(Ok(User {
+            id: "account-b".into(),
+            ..User::default()
+        })));
+        assert!(known.rootlist.is_empty());
+        assert!(known.editable_by_grant.is_empty());
+        assert_eq!(known.rootlist_account, None);
+        assert!(!known.rootlist_fresh);
+
+        let mut before_profile = headless_app();
+        before_profile.handle_backend_events(vec![Event::Rootlist { result: Ok(tree()) }]);
+        before_profile.handle_api(ApiResponse::Me(Ok(User {
+            id: "account-a".into(),
+            ..User::default()
+        })));
+        assert_eq!(before_profile.rootlist, tree().entries);
+        assert_eq!(
+            before_profile.rootlist_account.as_deref(),
+            Some("account-a")
+        );
+        assert!(before_profile.rootlist_fresh);
+    }
+
     /// Switching from Winamp back to the main window preserves the main
     /// window's size and position across the closing mini-window frame.
     #[test]
@@ -17756,6 +18285,67 @@ mod tests {
     }
 
     #[test]
+    fn liking_known_catalogue_rows_keeps_their_visible_metadata() {
+        let mut app = cached_liked_app();
+        let playlist_track = Track {
+            id: Some("playlist-known".into()),
+            uri: "spotify:track:playlist-known".into(),
+            name: "Known playlist song".into(),
+            ..Default::default()
+        };
+        app.playlist_pages.insert(
+            "known".into(),
+            PlaylistPage {
+                items: PagedList {
+                    items: vec![PlaylistItem {
+                        item: Some(PlayableItem::Track(playlist_track.clone())),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(app.change_liked_song(&playlist_track.uri, true));
+        app.sync_liked_songs();
+        assert_eq!(app.library.liked.items[0].track.name, playlist_track.name);
+
+        let album_track = Track {
+            id: Some("album-known".into()),
+            uri: "spotify:track:album-known".into(),
+            name: "Known album song".into(),
+            ..Default::default()
+        };
+        app.album_pages.insert(
+            "album-known".into(),
+            AlbumPage {
+                album: Loadable::Loaded(Album {
+                    id: "album-known".into(),
+                    uri: "spotify:album:album-known".into(),
+                    name: "Known album".into(),
+                    ..Default::default()
+                }),
+                tracks: PagedList {
+                    items: vec![album_track.clone()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(app.change_liked_song(&album_track.uri, true));
+        app.sync_liked_songs();
+        let liked = app
+            .library
+            .liked
+            .items
+            .iter()
+            .find(|item| item.track.uri == album_track.uri)
+            .unwrap();
+        assert_eq!(liked.track.name, album_track.name);
+        assert_eq!(liked.track.album.as_ref().unwrap().name, "Known album");
+    }
+
+    #[test]
     fn manual_liked_refresh_keeps_rows_sort_and_selection_while_loading() {
         let mut app = cached_liked_app();
         let sort = TableSort {
@@ -17799,7 +18389,10 @@ mod tests {
             },
         };
         let mut app = headless_app();
-        app.library.liked.items = vec![saved("spotify:track:stays"), saved("spotify:track:goes")];
+        app.library.liked.items = vec![
+            std::sync::Arc::new(saved("spotify:track:stays")),
+            std::sync::Arc::new(saved("spotify:track:goes")),
+        ];
         app.library.liked.total = Some(2);
         app.library.liked.loaded_once = true;
         let before = app.library.liked.revision;

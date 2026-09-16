@@ -185,6 +185,7 @@ struct Child {
     args: Args,
     ring: Ring,
     cursor: u64,
+    frames: Vec<[f32; 2]>,
     presets: Presets,
     live: Option<Live>,
     song: Option<Vec<String>>,
@@ -220,6 +221,7 @@ impl Child {
             args,
             ring,
             cursor: 0,
+            frames: Vec::with_capacity(4_096),
             presets: Presets::new(),
             live: None,
             song: None,
@@ -327,6 +329,10 @@ impl Child {
     }
 
     fn render(&mut self) {
+        if self.live.is_none() {
+            return;
+        }
+        self.ring.since(&mut self.cursor, LAG, &mut self.frames);
         let Some(live) = &mut self.live else {
             return;
         };
@@ -345,8 +351,7 @@ impl Child {
         if let Some(Request::Load { path, smooth }) = self.presets.take_request() {
             live.engine.load(&path, smooth);
         }
-        let frames = self.ring.since(&mut self.cursor, LAG);
-        live.engine.feed_frames(&frames);
+        live.engine.feed_frames(&self.frames);
         let size = live.window.inner_size();
         live.engine.render(
             0,

@@ -88,6 +88,10 @@ and dragging never write that order back to Spotify.
   See [migration, sign-out, and storage protection](/settings-and-files/).
 - Downloaded audio and artwork, in the cache directory, within the budget
   you set.
+  Spotidark bounds artwork transfers and decoding separately: at most four
+  transfers and two decoding jobs, with an 8 MiB encoded-image limit. This
+  uses the existing HTTP/proxy routing and adds no service or endpoint. See
+  [artwork and metadata retention](/settings-and-files/) for the limits.
 - The first time MilkDrop opens with an empty preset folder, the two projectM
   preset packs are downloaded from GitHub (about 26 MB) and stored in the
   config directory.

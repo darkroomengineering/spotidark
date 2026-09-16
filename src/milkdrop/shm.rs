@@ -97,23 +97,43 @@ impl Ring {
         self.count().store(total, Ordering::Release);
     }
 
+    /// Appends decoded stereo frames while applying the visualizer gain,
+    /// without staging another interleaved packet on the audio thread.
+    pub fn push_f64(&self, frames: &[[f64; 2]], gain: f32) {
+        if frames.is_empty() {
+            return;
+        }
+        let base = self.floats();
+        let mut total = self.count().load(Ordering::Relaxed);
+        for frame in frames {
+            let slot = (total as usize % FRAMES) * 2;
+            // SAFETY: `slot` is within the mapped ring. As with `push`, the
+            // single reader tolerates a torn frame.
+            unsafe {
+                *base.add(slot) = frame[0] as f32 * gain;
+                *base.add(slot + 1) = frame[1] as f32 * gain;
+            }
+            total += 1;
+        }
+        self.count().store(total, Ordering::Release);
+    }
+
     /// The frames written since `cursor`, up to `lag` frames behind the
     /// newest, and moves the cursor past them. Mirrors `AudioTap::since`.
-    pub fn since(&self, cursor: &mut u64, lag: usize) -> Vec<[f32; 2]> {
+    pub fn since(&self, cursor: &mut u64, lag: usize, out: &mut Vec<[f32; 2]>) {
         let total = self.count().load(Ordering::Acquire);
         let end = total.saturating_sub(lag as u64);
         let oldest = total.saturating_sub(FRAMES as u64);
         let start = (*cursor).max(oldest).min(end);
         let base = self.floats();
-        let out = (start..end)
-            .map(|frame| {
-                let slot = (frame as usize % FRAMES) * 2;
-                // SAFETY: `slot` is within the ring.
-                unsafe { [*base.add(slot), *base.add(slot + 1)] }
-            })
-            .collect();
+        out.clear();
+        out.reserve((end - start) as usize);
+        for frame in start..end {
+            let slot = (frame as usize % FRAMES) * 2;
+            // SAFETY: `slot` is within the ring.
+            out.push(unsafe { [*base.add(slot), *base.add(slot + 1)] });
+        }
         *cursor = end.max(*cursor);
-        out
     }
 }
 
@@ -134,14 +154,15 @@ mod tests {
         let reader = Ring::open(&path).unwrap();
         writer.push(&[0.5, -0.5, 1.0, 0.0, 0.2, 0.2, 0.3, 0.3]);
         let mut cursor = 0;
-        assert_eq!(
-            reader.since(&mut cursor, 1),
-            [[0.5, -0.5], [1.0, 0.0], [0.2, 0.2]]
-        );
+        let mut frames = Vec::new();
+        reader.since(&mut cursor, 1, &mut frames);
+        assert_eq!(frames, [[0.5, -0.5], [1.0, 0.0], [0.2, 0.2]]);
         assert_eq!(cursor, 3);
-        assert!(reader.since(&mut cursor, 1).is_empty());
+        reader.since(&mut cursor, 1, &mut frames);
+        assert!(frames.is_empty());
         writer.push(&[0.9, 0.9]);
-        assert_eq!(reader.since(&mut cursor, 1), [[0.3, 0.3]]);
+        reader.since(&mut cursor, 1, &mut frames);
+        assert_eq!(frames, [[0.3, 0.3]]);
         // A cursor behind the kept window starts at the oldest kept frame.
         let mut extra = vec![0.0f32; 2 * (FRAMES + 10)];
         for (i, sample) in extra.iter_mut().enumerate() {
@@ -149,7 +170,23 @@ mod tests {
         }
         writer.push(&extra);
         let mut stale = 0;
-        assert_eq!(reader.since(&mut stale, 0).len(), FRAMES);
+        reader.since(&mut stale, 0, &mut frames);
+        assert_eq!(frames.len(), FRAMES);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn f64_packets_keep_stereo_and_gain_without_a_staging_buffer() {
+        let path =
+            std::env::temp_dir().join(format!("fastpotify-shm-f64-test-{}", std::process::id()));
+        let writer = Ring::create(&path).unwrap();
+        let reader = Ring::open(&path).unwrap();
+        writer.push_f64(&[[0.5, -0.25], [1.0, 0.125]], 0.5);
+        let mut cursor = 0;
+        let mut frames = Vec::with_capacity(8);
+        reader.since(&mut cursor, 0, &mut frames);
+        assert_eq!(frames, [[0.25, -0.125], [0.5, 0.0625]]);
+        assert!(frames.capacity() >= 8, "the caller buffer is reused");
+        std::fs::remove_file(path).unwrap();
     }
 }

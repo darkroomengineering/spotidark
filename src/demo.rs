@@ -1109,8 +1109,20 @@ mod tests {
             let home = accessible_node(&tree, &gettext(locale, "Home"), Role::Button);
             let search = accessible_node(&tree, &gettext(locale, "Search"), Role::Button);
             accessible_node(&tree, &gettext(locale, "Create a playlist"), Role::Button);
+            let shelf = accessible_node(&tree, &gettext(locale, "Playlists"), Role::ComboBox);
+            accessible_frame(
+                &ctx,
+                &mut app,
+                vec![accessible_action(shelf, AccessibleAction::Click, None)],
+            );
+            let tree = accessible_frame(&ctx, &mut app, vec![]);
             accessible_node(&tree, &gettext(locale, "Albums"), Role::Button);
             accessible_node(&tree, &gettext(locale, "Artists"), Role::Button);
+            accessible_frame(
+                &ctx,
+                &mut app,
+                vec![keyboard(egui::Key::Escape, egui::Modifiers::NONE)],
+            );
             let liked = accessible_node(&tree, &gettext(locale, "Liked Songs"), Role::Button);
             accessible_frame(
                 &ctx,
@@ -1605,7 +1617,7 @@ mod tests {
         let saved = app.settings.sidebar_order.clone();
         accessible_frame(&ctx, &mut app, vec![]);
         let tree = accessible_frame(&ctx, &mut app, vec![]);
-        let sort = accessible_node(&tree, "Local custom order", Role::Button);
+        let sort = accessible_node(&tree, "Sort: Local custom order", Role::Button);
         accessible_frame(
             &ctx,
             &mut app,
@@ -1635,7 +1647,7 @@ mod tests {
         );
         assert_eq!(app.settings.sidebar_order, saved);
         let tree = accessible_frame(&ctx, &mut app, vec![]);
-        let sort = accessible_node(&tree, "Name", Role::Button);
+        let sort = accessible_node(&tree, "Sort: Name", Role::Button);
         accessible_frame(
             &ctx,
             &mut app,
@@ -1677,7 +1689,20 @@ mod tests {
             app.library.shows.next_offset = Some(50);
             view_frame(&ctx, &mut app, vec![], view);
             let painted = view_frame(&ctx, &mut app, vec![], view);
-            let position = painted
+            let picker = painted
+                .iter()
+                .find(|(text, _)| text == "Playlists")
+                .unwrap()
+                .1
+                .center();
+            view_frame(
+                &ctx,
+                &mut app,
+                pointer_click(picker, egui::PointerButton::Primary),
+                view,
+            );
+            let painted = view_frame(&ctx, &mut app, vec![], view);
+            let shelf = painted
                 .iter()
                 .find(|(text, _)| text == label)
                 .unwrap()
@@ -1686,7 +1711,7 @@ mod tests {
             view_frame(
                 &ctx,
                 &mut app,
-                pointer_click(position, egui::PointerButton::Primary),
+                pointer_click(shelf, egui::PointerButton::Primary),
                 view,
             );
             app.actions.clear();
@@ -1720,6 +1745,10 @@ mod tests {
         for dialog in [false, true] {
             let (ctx, mut app) = accessible_app(&format!("personal-app-instructions-{dialog}"));
             app.open(Page::Settings);
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new("settings-filter"), "Account".to_string());
+                data.insert_temp(egui::Id::new("personal-app-setup-open"), true);
+            });
             if dialog {
                 app.dialog = Some(Dialog::PersonalAppIntro);
             }
@@ -2709,6 +2738,12 @@ mod tests {
             );
         }
         app.demo_windows_controls = true;
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("settings-filter"),
+                "Show in taskbar".to_string(),
+            );
+        });
         for _ in 0..4 {
             accessible_frame(&ctx, &mut app, vec![]);
         }
@@ -2739,6 +2774,12 @@ mod tests {
         app.window_level_supported = false;
         app.settings.winamp_on_top = true;
         app.open(Page::Settings);
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("settings-filter"),
+                "Always on top".to_string(),
+            );
+        });
         accessible_frame(&ctx, &mut app, vec![]);
         let tree = accessible_frame(&ctx, &mut app, vec![]);
         let id = accessible_node(&tree, "Always on top", Role::CheckBox);
@@ -3656,6 +3697,109 @@ mod tests {
     }
 
     #[test]
+    fn narrow_search_filters_use_one_accessible_picker_and_preserve_results() {
+        use egui::accesskit::{Action as AccessibleAction, Role};
+
+        let (ctx, mut app) = accessible_app("narrow-search-filters");
+        app.show_queue_panel = true;
+        app.open(Page::Search);
+        app.search.query = "Bonobo".into();
+        app.search.committed = "Bonobo".into();
+        app.search.filter = SearchFilter::All;
+        let query = app.search.query.clone();
+        let committed = app.search.committed.clone();
+        let serial = app.search.serial;
+        let results_serial = app.search.results_serial;
+        let results = app.search.results.clone();
+        let song_label = match &results {
+            Loadable::Loaded(results) => {
+                let track = results
+                    .tracks
+                    .as_ref()
+                    .and_then(|page| page.items.first())
+                    .expect("demo search track");
+                format!("Play {}, {}", track.name, track.artist_names())
+            }
+            _ => panic!("demo search results"),
+        };
+
+        {
+            let mut draw = |events| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(760.0, 650.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| app.frame_ui(ui),
+                );
+                output.textures_delta.clear();
+                output
+                    .platform_output
+                    .accesskit_update
+                    .expect("screen-reader tree")
+            };
+
+            draw(vec![]);
+            let tree = draw(vec![]);
+            let picker = accessible_node(&tree, "Search filter", Role::ComboBox);
+            let picker_node = tree
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == picker)
+                .map(|(_, node)| node)
+                .expect("search filter node");
+            assert_eq!(picker_node.value(), Some("All"));
+            let picker_bounds = picker_node.bounds().expect("search filter bounds");
+            assert!(picker_bounds.y1 - picker_bounds.y0 >= 44.0);
+
+            draw(vec![accessible_action(
+                picker,
+                AccessibleAction::Click,
+                None,
+            )]);
+            let tree = draw(vec![]);
+            for filter in SearchFilter::ALL {
+                accessible_node(&tree, filter.label(), Role::Button);
+            }
+            let songs = accessible_node(&tree, SearchFilter::Songs.label(), Role::Button);
+            draw(vec![accessible_action(
+                songs,
+                AccessibleAction::Click,
+                None,
+            )]);
+            let tree = draw(vec![]);
+            let picker = accessible_node(&tree, "Search filter", Role::ComboBox);
+            let picker_node = tree
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == picker)
+                .map(|(_, node)| node)
+                .expect("updated search filter node");
+            assert_eq!(picker_node.value(), Some("Songs"));
+            let result = accessible_node(&tree, &song_label, Role::Button);
+            let result_bounds = tree
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == result)
+                .and_then(|(_, node)| node.bounds())
+                .expect("visible search result bounds");
+            assert!(result_bounds.y0 < 650.0, "results must keep visible space");
+        }
+
+        assert_eq!(app.search.filter, SearchFilter::Songs);
+        assert_eq!(app.search.query, query);
+        assert_eq!(app.search.committed, committed);
+        assert_eq!(app.search.serial, serial);
+        assert_eq!(app.search.results_serial, results_serial);
+        assert_eq!(app.search.results, results);
+        app.backend.shutdown();
+    }
+
+    #[test]
     fn home_json_hides_only_the_chosen_recommendation_shelves() {
         let (ctx, mut app) = accessible_app("home-json-visibility");
         let view = crate::ui::home::show;
@@ -4019,6 +4163,9 @@ mod tests {
         app.settings.milkdrop_screen_hz = 144;
         app.settings.milkdrop_fps = 60;
         app.open(Page::Settings);
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("settings-filter"), "Frame rate".to_string());
+        });
 
         // Read labels from the real Settings page.
         let drawn = |app: &mut App, ctx: &egui::Context| -> Vec<String> {
@@ -5453,7 +5600,18 @@ mod tests {
             let mut target = track(0);
             target.name = "Drop target".into();
             target.uri = "spotify:track:destination".into();
-            let rows = vec![(PlayableItem::Track(target), None, None)];
+            let rows: Vec<crate::model::TableItem> =
+                vec![(PlayableItem::Track(target), None, None)];
+            let row_refs: Vec<_> = rows
+                .iter()
+                .map(|(item, added, by)| {
+                    crate::ui::collection::TableItemRef::item(
+                        item,
+                        added.as_deref(),
+                        by.as_deref().map(std::borrow::Cow::Borrowed),
+                    )
+                })
+                .collect();
             if mode == "sorted" {
                 app.table_sorts.insert(
                     Page::Playlist("pl1".into()),
@@ -5479,7 +5637,7 @@ mod tests {
                             ui,
                             crate::ui::collection::Table {
                                 pagination: None,
-                                items: if empty { &[] } else { &rows },
+                                items: if empty { &[] } else { &row_refs },
                                 row_offset: if mode == "empty" { 0 } else { 100 },
                                 context: crate::model::RowContext::Context {
                                     uri: "spotify:playlist:pl1".into(),
@@ -5499,6 +5657,7 @@ mod tests {
                                 } else {
                                     ""
                                 },
+                                source_generation: 0,
                                 items_revision: u64::from(empty),
                             },
                         );
@@ -6001,6 +6160,7 @@ mod tests {
             cache: root.join("cache"),
         };
         let ctx = egui::Context::default();
+        ctx.enable_accesskit();
         let waker = crate::backend::Waker::default();
         waker.attach(&ctx);
         let mut app = App::new(
@@ -6016,37 +6176,20 @@ mod tests {
         app.attach(&ctx);
         populate(&mut app);
 
-        // Find the Y position of the Library header.
-        let mut library_y = None;
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1280.0, 800.0),
-            )),
-            ..Default::default()
-        };
-        for _ in 0..2 {
-            let mut output = ctx.run_ui(input.clone(), |ui| app.frame_ui(ui));
-            output.textures_delta.clear();
-            fn walk(shape: &egui::epaint::Shape, found: &mut Option<f32>) {
-                match shape {
-                    egui::epaint::Shape::Text(text) => {
-                        if text.galley.job.text == "Library" {
-                            *found = Some(text.pos.y);
-                        }
-                    }
-                    egui::epaint::Shape::Vec(shapes) => {
-                        shapes.iter().for_each(|shape| walk(shape, found));
-                    }
-                    _ => {}
-                }
-            }
-            for clipped in &output.shapes {
-                walk(&clipped.shape, &mut library_y);
-            }
-        }
-        let y = library_y.expect("Library label was not found");
-        let search_pos = egui::pos2(168.0, y + 4.0);
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        let search = accessible_node(&tree, "Search Your Library", egui::accesskit::Role::Button);
+        let search_pos = tree
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == search)
+            .and_then(|(_, node)| node.bounds())
+            .map(|bounds| {
+                egui::pos2(
+                    ((bounds.x0 + bounds.x1) * 0.5) as f32,
+                    ((bounds.y0 + bounds.y1) * 0.5) as f32,
+                )
+            })
+            .expect("library search bounds");
 
         // Click on the search button in the Library shelf header.
         frame_events(
@@ -6132,19 +6275,21 @@ mod tests {
                     version: "9.9.9".into(),
                     url: "https://example.invalid/releases".into(),
                 });
-                // Keep the original 760-point coverage without a right panel,
-                // and the reported 1080-point size with one. Full-height panel
-                // placement at 760 points is checked independently below.
+                // Include the 900-point panel layout where only the essential
+                // navigation, View, and account controls fit.
                 let widths: &[f32] = if panel.is_some() {
-                    &[1080.0, 1120.0, 1200.0, 1280.0, 1440.0, 1600.0, 1920.0]
+                    &[
+                        760.0, 800.0, 850.0, 860.0, 880.0, 900.0, 1080.0, 1120.0, 1200.0, 1280.0,
+                        1440.0, 1600.0, 1920.0,
+                    ]
                 } else {
                     &[
                         760.0, 800.0, 860.0, 900.0, 1000.0, 1080.0, 1200.0, 1280.0, 1440.0, 1600.0,
                         1920.0,
                     ]
                 };
+                let mut update_activated = false;
                 for &width in widths {
-                    let narrowest = width == widths[0];
                     let mut draw = || {
                         let mut output = ctx.run_ui(
                             egui::RawInput {
@@ -6165,16 +6310,104 @@ mod tests {
                     // The first frame settles the new window size.
                     draw();
                     let tree = draw();
-                    let badge = |label: &str| {
+                    let badge = |label: &str, role: Role| {
                         tree.nodes
                             .iter()
                             .find(|(_, node)| {
-                                node.role() == Role::Button
-                                    && node.label().is_some_and(|name| name.starts_with(label))
+                                node.role() == role
+                                    && if role == Role::Label {
+                                        node.value()
+                                    } else {
+                                        node.label()
+                                    }
+                                    .is_some_and(|name| name.starts_with(label))
                             })
                             .and_then(|(_, node)| node.bounds())
                             .map(|bounds| bounds.x0 as f32)
                     };
+                    let field_node = tree.nodes.iter().find(|(_, node)| {
+                        node.role() == Role::TextInput
+                            && node.label() == Some("What do you want to play?")
+                    });
+                    let device = badge("Playing on", Role::Label);
+                    if device.is_none() {
+                        if let Some(label) = label {
+                            assert!(badge(label, Role::Button).is_none());
+                        }
+                        let mut essential = ["Back", "Forward", "View"]
+                            .map(|name| {
+                                tree.nodes
+                                    .iter()
+                                    .find(|(_, node)| {
+                                        node.role() == Role::Button && node.label() == Some(name)
+                                    })
+                                    .and_then(|(_, node)| node.bounds())
+                                    .unwrap_or_else(|| panic!("missing essential {name} control"))
+                            })
+                            .to_vec();
+                        essential.push(
+                            tree.nodes
+                                .iter()
+                                .find(|(_, node)| {
+                                    node.role() == Role::Button
+                                        && node
+                                            .label()
+                                            .is_some_and(|name| name.starts_with("Account"))
+                                })
+                                .and_then(|(_, node)| node.bounds())
+                                .expect("missing Account control"),
+                        );
+                        let central_left = egui::containers::panel::PanelState::load(
+                            &ctx,
+                            egui::Id::new("sidebar"),
+                        )
+                        .expect("sidebar was drawn")
+                        .outer_rect
+                        .right();
+                        let central_right = panel.map_or(width, |panel| {
+                            egui::containers::panel::PanelState::load(
+                                &ctx,
+                                egui::Id::new(format!("{panel}-panel")),
+                            )
+                            .expect("side panel was drawn")
+                            .outer_rect
+                            .left()
+                        });
+                        for rect in &essential {
+                            assert!(rect.x1 - rect.x0 >= 44.0 && rect.y1 - rect.y0 >= 44.0);
+                            assert!(
+                                rect.x0 >= f64::from(central_left)
+                                    && rect.y0 >= 0.0
+                                    && rect.x1 <= f64::from(central_right),
+                                "essential control is clipped for panel {panel:?} at {width}: {rect:?}"
+                            );
+                        }
+                        for (index, left) in essential.iter().enumerate() {
+                            for right in &essential[index + 1..] {
+                                let overlaps = left.x0 < right.x1
+                                    && right.x0 < left.x1
+                                    && left.y0 < right.y1
+                                    && right.y0 < left.y1;
+                                assert!(
+                                    !overlaps,
+                                    "essential controls overlap for panel {panel:?} at {width}: {left:?} and {right:?}"
+                                );
+                            }
+                        }
+                        if field_node.is_some() {
+                            let field = ctx
+                                .read_response(egui::Id::new("global-search"))
+                                .expect("the compact search field");
+                            assert!(
+                                essential
+                                    .iter()
+                                    .all(|rect| rect.y1 <= field.rect.top() as f64),
+                                "essential controls overlap compact search for panel {panel:?} at {width}: {essential:?}, field {:?}",
+                                field.rect,
+                            );
+                        }
+                        continue;
+                    }
                     let field = ctx
                         .read_response(egui::Id::new("global-search"))
                         .expect("the search field")
@@ -6183,20 +6416,20 @@ mod tests {
                         + FIELD_RIGHT_INSET;
                     // Collapsed to an icon a badge keeps its label for a screen
                     // reader, so it is found at every width.
-                    let device = badge("Playing on").expect("the device badge");
+                    let device = device.expect("checked above");
                     assert!(
                         device >= field,
                         "the device badge covers {} px of the search field at {width} px",
                         field - device
                     );
                     if let Some(label) = label {
-                        let release = badge(label).expect("the update badge");
+                        let release = badge(label, Role::Button).expect("the update badge");
                         assert!(
                             release >= field,
                             "the update badge covers {} px of the search field at {width} px",
                             field - release
                         );
-                        if narrowest {
+                        if !update_activated {
                             let button = accessible_node(&tree, label, Role::Button);
                             let mut output = ctx.run_ui(
                                 egui::RawInput {
@@ -6219,6 +6452,7 @@ mod tests {
                                 "the collapsed {label} badge must open the updater"
                             );
                             app.show_update = false;
+                            update_activated = true;
                         }
                     }
                 }
@@ -6226,11 +6460,50 @@ mod tests {
         }
         app.backend.shutdown();
     }
+
+    #[test]
+    fn narrow_panel_search_moves_to_a_focused_query_row() {
+        use egui::accesskit::Role;
+        let (ctx, mut app) = accessible_app("narrow-panel-search");
+        app.show_queue_panel = true;
+        app.open(Page::Playlist("pl1".into()));
+        app.search.query.clear();
+        app.actions.push(Action::FocusSearch);
+        {
+            let mut draw = |events| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(900.0, 650.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| app.frame_ui(ui),
+                );
+                output.textures_delta.clear();
+                output
+                    .platform_output
+                    .accesskit_update
+                    .expect("screen-reader tree")
+            };
+            draw(vec![]);
+            draw(vec![]);
+            let tree = draw(vec![]);
+            accessible_node(&tree, "What do you want to play?", Role::TextInput);
+            assert!(ctx.memory(|memory| memory.has_focus(egui::Id::new("global-search"))));
+            draw(vec![egui::Event::Text("Muse".into())]);
+        }
+        assert_eq!(app.search.query, "Muse");
+        app.backend.shutdown();
+    }
+
     #[test]
     fn side_panels_keep_their_full_height_beside_the_page_toolbar() {
         for theme in ["dark", "light"] {
             let (ctx, mut app) = accessible_app(&format!("full-height-panels-{theme}"));
-            app.open(Page::Playlist("pl1".into()));
+            app.open(Page::Search);
             app.settings.theme = if theme == "light" {
                 crate::settings::ThemeChoice::Light
             } else {

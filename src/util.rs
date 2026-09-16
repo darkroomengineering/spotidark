@@ -126,6 +126,51 @@ pub fn open_spotify_url(uri: &str) -> Option<String> {
     Some(format!("https://open.spotify.com/{kind}/{id}"))
 }
 
+/// The desktop's reduced-motion accessibility preference when the native
+/// platform exposes it without an application dependency.
+pub fn system_reduced_motion() -> bool {
+    probe_reduced_motion()
+}
+
+#[cfg(target_os = "macos")]
+fn probe_reduced_motion() -> bool {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+
+    let Some(class) = AnyClass::get(c"NSWorkspace") else {
+        return false;
+    };
+    let workspace: *mut AnyObject = unsafe { msg_send![class, sharedWorkspace] };
+    if workspace.is_null() {
+        return false;
+    }
+    let reduced: Bool = unsafe { msg_send![workspace, accessibilityDisplayShouldReduceMotion] };
+    reduced.as_bool()
+}
+
+#[cfg(windows)]
+fn probe_reduced_motion() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    };
+
+    let mut animations = 1i32;
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut animations as *mut i32).cast(),
+            0,
+        )
+    };
+    read != 0 && animations == 0
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn probe_reduced_motion() -> bool {
+    false
+}
+
 /// The menu-bar shape for macOS: the rounded square with the play triangle punched
 /// out. macOS template images use only the alpha channel and paint the
 /// shape themselves, black in a light menu bar and white in a dark one.
@@ -143,6 +188,12 @@ pub fn tray_template_rgba(size: usize) -> Vec<u8> {
     rgba
 }
 
+pub(crate) const LOGO_SIZE: f32 = 128.0;
+pub(crate) const LOGO_INSET: f32 = 2.0;
+pub(crate) const LOGO_RADIUS: f32 = 28.0;
+/// The play mark uses a small optical offset from mathematical centering.
+pub(crate) const LOGO_PLAY: [(f32, f32); 3] = [(47.0, 38.0), (47.0, 90.0), (91.0, 64.0)];
+
 /// The mark rasterised to pixels for the window icon and the trays,
 /// where no egui painter exists. This is deliberately the one separate
 /// implementation of the logo; on-screen drawing goes through
@@ -150,14 +201,10 @@ pub fn tray_template_rgba(size: usize) -> Vec<u8> {
 pub fn app_icon_rgba(size: usize) -> Vec<u8> {
     let mut rgba = vec![0u8; size * size * 4];
     let center = size as f32 / 2.0;
-    let scale = size as f32 / 128.0;
-    let radius = 28.0 * scale;
-    let straight = 34.0 * scale;
-    let triangle = [
-        (50.0 * scale, 38.0 * scale),
-        (50.0 * scale, 90.0 * scale),
-        (94.0 * scale, 64.0 * scale),
-    ];
+    let scale = size as f32 / LOGO_SIZE;
+    let radius = LOGO_RADIUS * scale;
+    let straight = (LOGO_SIZE / 2.0 - LOGO_INSET - LOGO_RADIUS) * scale;
+    let triangle = LOGO_PLAY.map(|(x, y)| (x * scale, y * scale));
     let sign = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
         (a.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (a.1 - c.1)
     };
@@ -330,6 +377,14 @@ mod tests {
             open_spotify_url("spotify:album:z").as_deref(),
             Some("https://open.spotify.com/album/z")
         );
+    }
+
+    #[test]
+    fn logo_geometry_preserves_the_optical_offset() {
+        assert_eq!(LOGO_PLAY, [(47.0, 38.0), (47.0, 90.0), (91.0, 64.0)]);
+        assert_eq!(LOGO_PLAY[0].0, LOGO_PLAY[1].0);
+        assert_eq!(LOGO_PLAY[0].1 + LOGO_PLAY[1].1, LOGO_SIZE);
+        assert_eq!(LOGO_PLAY[2].1, LOGO_SIZE / 2.0);
     }
 
     #[test]

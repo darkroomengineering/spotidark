@@ -1,14 +1,13 @@
 //! Playlist, album, and Liked Songs pages: a hero, actions, and a track table.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use egui::{Align, Layout, Rect, Sense, Vec2, pos2, vec2};
 
-use crate::api::models::{Album, PlayableItem, Playlist, pick_image};
+use crate::api::models::{Album, PlayableItem, Playlist, Track, pick_image};
 use crate::app::App;
 use crate::model::{
-    Action, Dialog, DragTrack, Loadable, Page, PagedList, RowContext, SortColumn, TableItem,
-    TableRowsCache, TableSort,
+    Action, Dialog, DragTrack, Loadable, Page, PagedList, RowContext, SortColumn, TableSort,
 };
 use crate::theme::{self, Icon, Palette};
 use crate::util;
@@ -314,7 +313,7 @@ fn playlist_position_jump(
 
 /// A track table with virtualised rows and paging.
 pub struct Table<'a> {
-    pub items: &'a [TableItem],
+    pub items: &'a [TableItemRef<'a>],
     /// Spotify index represented by the first item.
     pub row_offset: u32,
     pub pagination: Option<TablePagination<'a>>,
@@ -328,6 +327,8 @@ pub struct Table<'a> {
     pub error: Option<&'a str>,
     pub can_load_more: bool,
     pub filter: &'a str,
+    /// Identity of the source request, distinct from its row revision.
+    pub source_generation: u64,
     pub items_revision: u64,
 }
 
@@ -344,6 +345,9 @@ pub struct TablePagination<'a> {
 
 #[derive(Clone)]
 pub struct TableCache {
+    pub account_id: Option<String>,
+    pub page: Page,
+    pub source_generation: u64,
     pub sort: Option<TableSort>,
     pub needle: String,
     pub items_revision: u64,
@@ -354,91 +358,201 @@ pub struct TableCache {
     pub view_positions: Arc<[Option<usize>]>,
 }
 
-pub fn table_items_hit(
-    app: &App,
-    page: &Page,
-    generation: u64,
-    items_revision: u64,
-    user_names_revision: u64,
-) -> Option<Arc<[TableItem]>> {
-    app.table_rows.get(page).and_then(|cached| {
-        (cached.generation == generation
-            && cached.items_revision == items_revision
-            && cached.user_names_revision == user_names_revision)
-            .then(|| Arc::clone(&cached.items))
-    })
-}
-
-pub fn remember_table_items(
-    app: &mut App,
-    page: Page,
-    generation: u64,
-    items_revision: u64,
-    user_names_revision: u64,
-    items: Vec<TableItem>,
-) -> Arc<[TableItem]> {
-    let items: Arc<[TableItem]> = items.into();
-    app.table_rows.insert(
-        page.clone(),
-        TableRowsCache {
-            generation,
-            items_revision,
-            user_names_revision,
-            items: Arc::clone(&items),
-        },
-    );
-    app.retain_table_rows(&page);
-    items
-}
-
-/// Cached table rows for one page. Rebuilt only when the source list,
-/// contributor names, or page generation change, not every frame.
-///
-/// The cache lives on `App`, not in egui temp data. It is dropped when the
-/// page is evicted, when the account resets, and when more than two tables
-/// would be retained. Recreated pages get a new generation, so an old
-/// revision number cannot resurrect stale rows.
-pub fn cached_table_items(
-    app: &mut App,
-    page: Page,
-    generation: u64,
-    items_revision: u64,
-    user_names_revision: u64,
-    build: impl FnOnce() -> Vec<TableItem>,
-) -> Arc<[TableItem]> {
-    if let Some(items) =
-        table_items_hit(app, &page, generation, items_revision, user_names_revision)
-    {
-        app.retain_table_rows(&page);
-        return items;
+impl TableCache {
+    fn matches(
+        &self,
+        account_id: Option<&str>,
+        page: &Page,
+        sort: Option<TableSort>,
+        needle: &str,
+        version: (u64, u64, u64),
+    ) -> bool {
+        self.account_id.as_deref() == account_id
+            && &self.page == page
+            && self.source_generation == version.0
+            && self.sort == sort
+            && self.needle == needle
+            && self.items_revision == version.1
+            && self.user_names_revision == version.2
     }
-    remember_table_items(
-        app,
-        page,
-        generation,
-        items_revision,
-        user_names_revision,
-        build(),
-    )
+}
+
+#[derive(Clone, Copy)]
+enum RowPlayable<'a> {
+    Item(&'a PlayableItem, bool),
+    Track(&'a Track, Option<&'a Album>),
+}
+
+/// A table projection borrowing the catalogue's canonical row. Only rows that
+/// are painted, selected, or acted on materialize an owned `PlayableItem`.
+#[derive(Clone)]
+pub struct TableItemRef<'a> {
+    playable: RowPlayable<'a>,
+    added_at: Option<&'a str>,
+    added_by: Option<Cow<'a, str>>,
+}
+
+impl<'a> TableItemRef<'a> {
+    #[cfg(test)]
+    pub(crate) fn item(
+        item: &'a PlayableItem,
+        added_at: Option<&'a str>,
+        added_by: Option<Cow<'a, str>>,
+    ) -> Self {
+        Self {
+            playable: RowPlayable::Item(item, false),
+            added_at,
+            added_by,
+        }
+    }
+
+    fn playlist(
+        item: &'a PlayableItem,
+        local: bool,
+        added_at: Option<&'a str>,
+        added_by: Option<Cow<'a, str>>,
+    ) -> Self {
+        Self {
+            playable: RowPlayable::Item(item, local),
+            added_at,
+            added_by,
+        }
+    }
+
+    fn track(
+        track: &'a Track,
+        fallback_album: Option<&'a Album>,
+        added_at: Option<&'a str>,
+    ) -> Self {
+        Self {
+            playable: RowPlayable::Track(track, fallback_album),
+            added_at,
+            added_by: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_owned(item: &'a crate::model::TableItem) -> Self {
+        Self::item(
+            &item.0,
+            item.1.as_deref(),
+            item.2.as_deref().map(Cow::Borrowed),
+        )
+    }
+
+    fn materialize(&self) -> Cow<'a, PlayableItem> {
+        match self.playable {
+            RowPlayable::Item(item, local) => {
+                if local && matches!(item, PlayableItem::Track(track) if !track.is_local) {
+                    let mut item = item.clone();
+                    if let PlayableItem::Track(track) = &mut item {
+                        track.is_local = true;
+                    }
+                    Cow::Owned(item)
+                } else {
+                    Cow::Borrowed(item)
+                }
+            }
+            RowPlayable::Track(track, fallback) => {
+                let mut track = track.clone();
+                if track.album.is_none()
+                    && let Some(album) = fallback
+                {
+                    track.album = Some(Album {
+                        id: album.id.clone(),
+                        name: album.name.clone(),
+                        uri: album.uri.clone(),
+                        images: album.images.clone(),
+                        ..Album::default()
+                    });
+                }
+                Cow::Owned(PlayableItem::Track(track))
+            }
+        }
+    }
+
+    fn uri(&self) -> &str {
+        match self.playable {
+            RowPlayable::Item(item, _) => item.uri(),
+            RowPlayable::Track(track, _) => &track.uri,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self.playable {
+            RowPlayable::Item(item, _) => item.name(),
+            RowPlayable::Track(track, _) => &track.name,
+        }
+    }
+
+    fn album_name(&self) -> &str {
+        match self.playable {
+            RowPlayable::Item(PlayableItem::Track(track), _) | RowPlayable::Track(track, _) => {
+                track
+                    .album
+                    .as_ref()
+                    .map(|album| album.name.as_str())
+                    .unwrap_or_else(|| match self.playable {
+                        RowPlayable::Track(_, Some(album)) => &album.name,
+                        _ => "",
+                    })
+            }
+            RowPlayable::Item(PlayableItem::Episode(_), _) => "",
+        }
+    }
+
+    fn artist_names(&self) -> String {
+        match self.playable {
+            RowPlayable::Item(PlayableItem::Track(track), _) | RowPlayable::Track(track, _) => {
+                track.artist_names()
+            }
+            RowPlayable::Item(PlayableItem::Episode(_), _) => String::new(),
+        }
+    }
+
+    fn duration_ms(&self) -> u32 {
+        match self.playable {
+            RowPlayable::Item(item, _) => item.duration_ms(),
+            RowPlayable::Track(track, _) => track.duration_ms,
+        }
+    }
+
+    fn row_playable(&self) -> bool {
+        if self.uri().is_empty() || self.uri().starts_with("spotify:local:") {
+            return false;
+        }
+        match self.playable {
+            RowPlayable::Item(PlayableItem::Track(track), local) => {
+                !local && !track.is_local && track.is_playable != Some(false)
+            }
+            RowPlayable::Track(track, _) => !track.is_local && track.is_playable != Some(false),
+            RowPlayable::Item(PlayableItem::Episode(_), _) => true,
+        }
+    }
 }
 
 pub fn prepare_table_view(
     ui: &mut egui::Ui,
     app: &App,
     page: &Page,
-    items: &[TableItem],
+    items: &[TableItemRef<'_>],
     needle: &str,
     sort: Option<TableSort>,
-    items_revision: u64,
+    version: (u64, u64),
 ) -> Arc<TableCache> {
-    let cache_id = egui::Id::new("table-view-cache").with(page);
+    // A single entry bounds the derived URI/index projection to the table
+    // currently being drawn. Page and source generation prevent stale reuse.
+    let cache_id = egui::Id::new("table-view-cache");
     let cached = ui.data(|d| d.get_temp::<Arc<TableCache>>(cache_id));
 
     let is_valid = cached.as_ref().is_some_and(|c| {
-        c.sort == sort
-            && c.needle == needle
-            && c.items_revision == items_revision
-            && c.user_names_revision == app.user_names_revision
+        c.matches(
+            app.user_id(),
+            page,
+            sort,
+            needle,
+            (version.0, version.1, app.user_names_revision),
+        )
     });
 
     if let Some(entry) = cached.filter(|_| is_valid) {
@@ -449,8 +563,8 @@ pub fn prepare_table_view(
         let view_uris = (sort.is_some() || !needle.is_empty()).then(|| {
             let mut uris = Vec::new();
             for &index in &visible {
-                let item = &items[index].0;
-                view_positions.push(widgets::row_playable(item).then(|| {
+                let item = &items[index];
+                view_positions.push(item.row_playable().then(|| {
                     let position = uris.len();
                     uris.push(item.uri().to_string());
                     position
@@ -459,9 +573,12 @@ pub fn prepare_table_view(
             Arc::<[String]>::from(uris)
         });
         let entry = Arc::new(TableCache {
+            account_id: app.user_id().map(str::to_owned),
+            page: page.clone(),
+            source_generation: version.0,
             sort,
             needle: needle.to_string(),
-            items_revision,
+            items_revision: version.1,
             user_names_revision: app.user_names_revision,
             visible: visible.into(),
             view_uris,
@@ -483,7 +600,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
         table.items,
         &needle,
         sort,
-        table.items_revision,
+        (table.source_generation, table.items_revision),
     );
     let thin = app.settings.tracklist_compact;
     let show_cover = !thin && table.show_cover;
@@ -626,8 +743,8 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
         .iter()
         .filter_map(|row| item_index(*row))
         .filter_map(|index| table.items.get(index))
-        .filter(|(item, _, _)| !item.uri().is_empty())
-        .map(|(item, _, _)| item.clone())
+        .filter(|item| !item.uri().is_empty())
+        .map(|item| item.materialize().into_owned())
         .collect();
     let mut pick = None;
     let mut row_responses = Vec::new();
@@ -673,20 +790,26 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
             .and_then(|page| page.positions)
             .map_or(index, |positions| positions[index]);
         let actual_index = absolute_row_index(table.row_offset, local_index);
-        let (item, added_at, added_by) = &table.items[index];
-        if item.uri().is_empty() {
+        let row_item = &table.items[index];
+        if row_item.uri().is_empty() {
             placeholder_row(ui, &palette, row_height, "Unavailable", false);
             return;
         }
+        let item = row_item.materialize();
         // Shift neighboring rows around the current drop slot.
-        let shift = ui.ctx().animate_value_with_time(
-            ui.id().with(("table-move-shift", row)),
+        let shift_target = if theme::motion_reduced(ui.ctx()) {
+            0.0
+        } else {
             match move_slot {
                 Some(slot) if row < slot => -4.0,
                 Some(_) => 4.0,
                 None => 0.0,
-            },
-            0.12,
+            }
+        };
+        let shift = ui.ctx().animate_value_with_time(
+            ui.id().with(("table-move-shift", row)),
+            shift_target,
+            theme::motion_time(ui.ctx(), 0.12),
         );
         let (response, asked) = widgets::track_row_response(
             ui,
@@ -698,12 +821,12 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
                     actual_index
                 },
                 number: Some(if sorted { row + 1 } else { actual_index + 1 }),
-                item,
+                item: &item,
                 context: &context,
                 show_cover,
                 show_album: table.show_album,
-                added_at: added_at.as_deref(),
-                added_by: added_by.as_deref(),
+                added_at: row_item.added_at,
+                added_by: row_item.added_by.as_deref(),
                 show_added_by: table.show_added_by,
                 compact: false,
                 thin,
@@ -876,64 +999,55 @@ fn absolute_row_index(row_offset: u32, local_index: usize) -> usize {
 
 /// The indices of `items` as a view presents them: filtered by `needle`
 /// (already lowercased), then ordered by `sort`.
-fn view_indices(items: &[TableItem], needle: &str, sort: Option<TableSort>) -> Vec<usize> {
+fn view_indices(items: &[TableItemRef<'_>], needle: &str, sort: Option<TableSort>) -> Vec<usize> {
     let mut visible: Vec<usize> = items
         .iter()
         .enumerate()
-        .filter(|(_, (item, _, _))| {
+        .filter(|(_, item)| {
             if item.uri().is_empty() {
                 return false;
             }
             if needle.is_empty() {
                 return true;
             }
-            let haystack = match item {
-                PlayableItem::Track(track) => format!(
-                    "{} {} {}",
-                    track.name,
-                    track.artist_names(),
-                    track
-                        .album
-                        .as_ref()
-                        .map(|album| album.name.as_str())
-                        .unwrap_or("")
-                ),
-                PlayableItem::Episode(episode) => episode.name.clone(),
-            };
+            let haystack = format!(
+                "{} {} {}",
+                item.name(),
+                item.artist_names(),
+                item.album_name()
+            );
             haystack.to_lowercase().contains(needle)
         })
         .map(|(index, _)| index)
         .collect();
     if let Some(sort) = sort {
-        let album_of = |item: &PlayableItem| match item {
-            PlayableItem::Track(track) => track
-                .album
-                .as_ref()
-                .map(|album| album.name.to_lowercase())
-                .unwrap_or_default(),
-            PlayableItem::Episode(_) => String::new(),
-        };
-        let duration_of = |item: &PlayableItem| match item {
-            PlayableItem::Track(track) => track.duration_ms,
-            PlayableItem::Episode(episode) => episode.duration_ms,
-        };
         visible.sort_by(|a, b| {
-            let (item_a, added_a, adder_a) = &items[*a];
-            let (item_b, added_b, adder_b) = &items[*b];
+            let item_a = &items[*a];
+            let item_b = &items[*b];
             let ordering = match sort.column {
                 SortColumn::Title => item_a
                     .name()
                     .to_lowercase()
                     .cmp(&item_b.name().to_lowercase()),
-                SortColumn::Album => album_of(item_a).cmp(&album_of(item_b)),
-                SortColumn::Added => added_a.cmp(added_b),
+                SortColumn::Album => item_a
+                    .album_name()
+                    .to_lowercase()
+                    .cmp(&item_b.album_name().to_lowercase()),
+                SortColumn::Added => item_a.added_at.cmp(&item_b.added_at),
                 SortColumn::Index => a.cmp(b),
-                SortColumn::AddedBy => adder_a
+                SortColumn::AddedBy => item_a
+                    .added_by
                     .as_deref()
                     .unwrap_or_default()
                     .to_lowercase()
-                    .cmp(&adder_b.as_deref().unwrap_or_default().to_lowercase()),
-                SortColumn::Duration => duration_of(item_a).cmp(&duration_of(item_b)),
+                    .cmp(
+                        &item_b
+                            .added_by
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase(),
+                    ),
+                SortColumn::Duration => item_a.duration_ms().cmp(&item_b.duration_ms()),
             };
             if sort.ascending {
                 ordering
@@ -945,41 +1059,61 @@ fn view_indices(items: &[TableItem], needle: &str, sort: Option<TableSort>) -> V
     visible
 }
 
-fn total_duration(items: &[TableItem]) -> u64 {
-    items
-        .iter()
-        .map(|(item, _, _)| item.duration_ms() as u64)
-        .sum()
+fn total_duration(items: &[TableItemRef<'_>]) -> u64 {
+    items.iter().map(|item| item.duration_ms() as u64).sum()
 }
 
-fn items_of(
-    list: &PagedList<crate::api::models::PlaylistItem>,
+fn collaborator_byline(
+    contributors: &std::collections::BTreeSet<String>,
     owner_id: Option<&str>,
-    owner_name: &str,
     names: &std::collections::HashMap<String, Option<String>>,
-) -> Vec<TableItem> {
+    others: usize,
+) -> String {
+    let named: Vec<&str> = contributors
+        .iter()
+        .filter(|id| Some(id.as_str()) != owner_id)
+        .filter_map(|id| names.get(id)?.as_deref())
+        .collect();
+    if named.len() == others && others <= 2 {
+        format!("with {}", named.join(" and "))
+    } else if others == 1 {
+        "and 1 other".to_string()
+    } else {
+        format!("and {others} others")
+    }
+}
+
+fn items_of<'a>(
+    list: &'a PagedList<crate::api::models::PlaylistItem>,
+    owner_id: Option<&'a str>,
+    owner_name: &'a str,
+    names: &'a std::collections::HashMap<String, Option<String>>,
+) -> Vec<TableItemRef<'a>> {
     list.items
         .iter()
         .filter_map(|item| {
-            let mut playable = item.playable().cloned()?;
-            if let PlayableItem::Track(track) = &mut playable {
-                track.is_local |= item.is_local;
-            }
+            let playable = item.playable()?;
             let adder = item
                 .added_by
                 .as_ref()
                 .and_then(|user| user.id.as_deref())
                 .map(|id| {
                     if Some(id) == owner_id {
-                        owner_name.to_string()
+                        Cow::Borrowed(owner_name)
                     } else {
                         names
                             .get(id)
-                            .and_then(|name| name.clone())
-                            .unwrap_or_else(|| id.to_string())
+                            .and_then(|name| name.as_deref())
+                            .map(Cow::Borrowed)
+                            .unwrap_or_else(|| Cow::Borrowed(id))
                     }
                 });
-            Some((playable, item.added_at.clone(), adder))
+            Some(TableItemRef::playlist(
+                playable,
+                item.is_local,
+                item.added_at.as_deref(),
+                adder,
+            ))
         })
         .collect()
 }
@@ -998,34 +1132,27 @@ pub fn top_songs(app: &mut App, ui: &mut egui::Ui) {
     );
     ui.add_space(18.0);
 
-    let tracks = match &app.home.top_songs {
+    let top_songs = std::mem::take(&mut app.home.top_songs);
+    let tracks = match top_songs {
         Loadable::Loaded(tracks) => tracks,
-        Loadable::Loading | Loadable::NotLoaded => {
+        state @ (Loadable::Loading | Loadable::NotLoaded) => {
+            app.home.top_songs = state;
             widgets::loading_row(ui, &palette, app.locale);
             return;
         }
         Loadable::Failed(error) => {
-            let error = error.clone();
             widgets::error_row(ui, app, &error, Some(Page::TopSongs));
+            app.home.top_songs = Loadable::Failed(error);
             return;
         }
     };
-    let generation = app.home.top_songs_generation;
-    let names = app.user_names_revision;
-    let items =
-        if let Some(items) = table_items_hit(app, &Page::TopSongs, generation, generation, names) {
-            items
-        } else {
-            let rows = tracks
-                .iter()
-                .cloned()
-                .map(|track| (PlayableItem::Track(track), None, None))
-                .collect();
-            remember_table_items(app, Page::TopSongs, generation, generation, names, rows)
-        };
+    let items: Vec<_> = tracks
+        .iter()
+        .map(|track| TableItemRef::track(track, None, None))
+        .collect();
     let uris: Arc<[String]> = items
         .iter()
-        .map(|(item, _, _)| item.uri().to_string())
+        .map(|item| item.uri().to_string())
         .collect::<Vec<_>>()
         .into();
     table(
@@ -1045,9 +1172,11 @@ pub fn top_songs(app: &mut App, ui: &mut egui::Ui) {
             error: None,
             can_load_more: false,
             filter: "",
+            source_generation: app.home.top_songs_generation,
             items_revision: app.home.top_songs_generation,
         },
     );
+    app.home.top_songs = Loadable::Loaded(tracks);
 }
 
 pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
@@ -1059,22 +1188,13 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
     let user_id = app.user_id().unwrap_or("").to_string();
     match &page.playlist {
         Loadable::Loaded(playlist) => {
-            let generation = page.generation;
-            let revision = page.items.revision;
-            let names = app.user_names_revision;
-            let key = Page::Playlist(id.to_string());
-            let items = if let Some(items) = table_items_hit(app, &key, generation, revision, names)
-            {
-                items
-            } else {
-                let rows = items_of(
-                    &page.items,
-                    playlist.owner.id.as_deref(),
-                    playlist.owner_name(),
-                    &app.user_names,
-                );
-                remember_table_items(app, key, generation, revision, names, rows)
-            };
+            let user_names = std::mem::take(&mut app.user_names);
+            let items = items_of(
+                &page.items,
+                playlist.owner.id.as_deref(),
+                playlist.owner_name(),
+                &user_names,
+            );
             let positions: Vec<usize> = page
                 .items
                 .items
@@ -1104,20 +1224,8 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
             let made_together = playlist.collaborative || others > 0;
             let mut byline = vec![(playlist.owner_name().to_string(), None)];
             if others > 0 {
-                let named: Vec<String> = page
-                    .contributors
-                    .iter()
-                    .filter(|id| Some(id.as_str()) != owner_id)
-                    .filter_map(|id| app.user_names.get(id)?.clone())
-                    .collect();
                 byline.push((
-                    if named.len() == others && others <= 2 {
-                        format!("with {}", named.join(" and "))
-                    } else if others == 1 {
-                        "and 1 other".to_string()
-                    } else {
-                        format!("and {others} others")
-                    },
+                    collaborator_byline(&page.contributors, owner_id, &user_names, others),
                     None,
                 ));
             }
@@ -1164,7 +1272,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 &items,
                 &needle,
                 sort,
-                page.items.revision,
+                (page.generation, page.items.revision),
             );
             let view_play = table_view.view_uris.as_ref().map(Arc::clone);
             let playlist_clone = playlist.clone();
@@ -1225,9 +1333,11 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                     error: page.items.error.as_deref(),
                     can_load_more: page.items.can_load_more(),
                     filter: &page.filter,
+                    source_generation: page.generation,
                     items_revision: page.items.revision,
                 },
             );
+            app.user_names = user_names;
         }
         Loadable::Loading | Loadable::NotLoaded => {
             ui.add_space(40.0);
@@ -1251,34 +1361,12 @@ pub fn album(app: &mut App, ui: &mut egui::Ui, id: &str) {
     match &page.album {
         Loadable::Loaded(album) => {
             album_hero(app, ui, album, &page.tracks);
-            let generation = page.generation;
-            let revision = page.tracks.revision;
-            let names = app.user_names_revision;
-            let key = Page::Album(id.to_string());
-            let items = if let Some(items) = table_items_hit(app, &key, generation, revision, names)
-            {
-                items
-            } else {
-                let rows = page
-                    .tracks
-                    .items
-                    .iter()
-                    .cloned()
-                    .map(|mut track| {
-                        if track.album.is_none() {
-                            track.album = Some(Album {
-                                id: album.id.clone(),
-                                name: album.name.clone(),
-                                uri: album.uri.clone(),
-                                images: album.images.clone(),
-                                ..Album::default()
-                            });
-                        }
-                        (PlayableItem::Track(track), None, None)
-                    })
-                    .collect();
-                remember_table_items(app, key, generation, revision, names, rows)
-            };
+            let items: Vec<_> = page
+                .tracks
+                .items
+                .iter()
+                .map(|track| TableItemRef::track(track, Some(album), None))
+                .collect();
             let saved = app.is_saved(&album.uri).unwrap_or(false);
             let sort = app.table_sorts.get(&Page::Album(id.to_string())).copied();
             let table_view = prepare_table_view(
@@ -1288,7 +1376,7 @@ pub fn album(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 &items,
                 "",
                 sort,
-                page.tracks.revision,
+                (page.generation, page.tracks.revision),
             );
             let album_view = table_view.view_uris.as_ref().map(Arc::clone);
             actions_row(
@@ -1335,6 +1423,7 @@ pub fn album(app: &mut App, ui: &mut egui::Ui, id: &str) {
                     error: page.tracks.error.as_deref(),
                     can_load_more: page.tracks.can_load_more(),
                     filter: "",
+                    source_generation: page.generation,
                     items_revision: page.tracks.revision,
                 },
             );
@@ -1433,27 +1522,11 @@ fn album_hero(
 
 pub fn liked(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let revision = app.library.liked.revision;
-    let names = app.user_names_revision;
-    let items =
-        if let Some(items) = table_items_hit(app, &Page::LikedSongs, revision, revision, names) {
-            items
-        } else {
-            let rows = app
-                .library
-                .liked
-                .items
-                .iter()
-                .map(|saved| {
-                    (
-                        PlayableItem::Track(saved.track.clone()),
-                        saved.added_at.clone(),
-                        None,
-                    )
-                })
-                .collect();
-            remember_table_items(app, Page::LikedSongs, revision, revision, names, rows)
-        };
+    let saved = app.library.liked.items.clone();
+    let items: Vec<_> = saved
+        .iter()
+        .map(|saved| TableItemRef::track(&saved.track, None, saved.added_at.as_deref()))
+        .collect();
     let total = app.library.liked.total.unwrap_or(items.len() as u32);
     let user = app
         .user
@@ -1499,7 +1572,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         &items,
         &needle,
         sort,
-        app.library.liked.revision,
+        (app.liked_generation(), app.library.liked.revision),
     );
     let liked_view = table_view.view_uris.as_ref().map(Arc::clone);
     actions_row(
@@ -1520,7 +1593,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
     ui.data_mut(|data| data.insert_temp(filter_id, filter.clone()));
     let uris: Arc<[String]> = items
         .iter()
-        .map(|(item, _, _)| item.uri().to_string())
+        .map(|item| item.uri().to_string())
         .collect::<Vec<_>>()
         .into();
     let context = match collection_uri {
@@ -1551,6 +1624,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
             error: error.as_deref(),
             can_load_more,
             filter: &filter,
+            source_generation: app.liked_generation(),
             items_revision: app.library.liked.revision,
         },
     );
@@ -1585,7 +1659,7 @@ fn palette_of(app: &App) -> Palette {
 mod tests {
     use super::*;
     use crate::api::models::{Album, ArtistRef, Image, Track};
-    use crate::model::PlaylistPage;
+    use crate::model::{PlaylistPage, TableItem};
 
     #[test]
     fn finite_playlist_reserves_its_height_and_requests_the_visible_window() {
@@ -1646,7 +1720,7 @@ mod tests {
 
     #[test]
     fn null_album_slots_are_not_sorted_playback_entries() {
-        let items = vec![
+        let items = [
             (PlayableItem::Track(Track::default()), None, None),
             (
                 PlayableItem::Track(Track {
@@ -1657,9 +1731,10 @@ mod tests {
                 None,
             ),
         ];
+        let rows: Vec<_> = items.iter().map(TableItemRef::from_owned).collect();
         assert_eq!(
             view_indices(
-                &items,
+                &rows,
                 "",
                 Some(TableSort {
                     column: SortColumn::Title,
@@ -1735,6 +1810,7 @@ mod tests {
                             error: Some("Offline"),
                             can_load_more: true,
                             filter: "",
+                            source_generation: 7,
                             items_revision: 0,
                         },
                     )
@@ -1801,12 +1877,13 @@ mod tests {
         let ctx = egui::Context::default();
         theme::install(&ctx);
         let items = make_large_tracks(1);
+        let rows: Vec<_> = items.iter().map(TableItemRef::from_owned).collect();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             table(
                 &mut app,
                 ui,
                 Table {
-                    items: &items,
+                    items: &rows,
                     row_offset: 0,
                     pagination: None,
                     context: RowContext::Context {
@@ -1822,6 +1899,7 @@ mod tests {
                     error: None,
                     can_load_more: true,
                     filter: "unmatched",
+                    source_generation: 0,
                     items_revision: 0,
                 },
             )
@@ -1868,13 +1946,6 @@ mod tests {
                 (PlayableItem::Track(track), None, None)
             })
             .collect()
-    }
-
-    fn names_only_bytes(items: &[TableItem]) -> usize {
-        items
-            .iter()
-            .map(|(item, ..)| item.uri().len() + item.name().len())
-            .sum()
     }
 
     fn make_test_tracks() -> Vec<TableItem> {
@@ -1950,21 +2021,22 @@ mod tests {
     #[test]
     fn test_view_indices_filtering_and_sorting() {
         let items = make_test_tracks();
+        let rows: Vec<_> = items.iter().map(TableItemRef::from_owned).collect();
 
         // 1. Unfiltered and unsorted: natural order
-        let visible = view_indices(&items, "", None);
+        let visible = view_indices(&rows, "", None);
         assert_eq!(visible, vec![0, 1, 2, 3]);
 
         // 2. Filter by track name
-        let visible = view_indices(&items, "bohemian", None);
+        let visible = view_indices(&rows, "bohemian", None);
         assert_eq!(visible, vec![0]);
 
         // 3. Filter by artist name
-        let visible = view_indices(&items, "soda", None);
+        let visible = view_indices(&rows, "soda", None);
         assert_eq!(visible, vec![1]);
 
         // 4. Filter by album name
-        let visible = view_indices(&items, "mutter", None);
+        let visible = view_indices(&rows, "mutter", None);
         assert_eq!(visible, vec![3]);
 
         // 5. Sort descending by title
@@ -1972,8 +2044,27 @@ mod tests {
             column: SortColumn::Title,
             ascending: false,
         });
-        let visible = view_indices(&items, "", sort);
+        let visible = view_indices(&rows, "", sort);
         assert_eq!(visible, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn collaborative_byline_uses_names_while_the_map_is_borrowed() {
+        let contributors = ["owner", "kasia", "sam"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let names = [
+            ("kasia".to_string(), Some("Kasia".to_string())),
+            ("sam".to_string(), Some("Sam".to_string())),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            collaborator_byline(&contributors, Some("owner"), &names, 2),
+            "with Kasia and Sam"
+        );
     }
 
     #[test]
@@ -1983,6 +2074,9 @@ mod tests {
             ascending: true,
         });
         let cache = TableCache {
+            account_id: Some("listener".into()),
+            page: Page::Playlist("one".into()),
+            source_generation: 9,
             sort,
             needle: "desp".to_string(),
             items_revision: 5,
@@ -1993,12 +2087,30 @@ mod tests {
         };
 
         // Cache hit
-        assert!(
-            cache.sort == sort
-                && cache.needle == "desp"
-                && cache.items_revision == 5
-                && cache.user_names_revision == 2
-        );
+        assert!(cache.matches(
+            Some("listener"),
+            &Page::Playlist("one".into()),
+            sort,
+            "desp",
+            (9, 5, 2)
+        ));
+
+        // A recreated page can reuse the same row revision, but its request
+        // generation must invalidate the old URI projection.
+        assert!(!cache.matches(
+            Some("listener"),
+            &Page::Playlist("one".into()),
+            sort,
+            "desp",
+            (10, 5, 2)
+        ));
+        assert!(!cache.matches(
+            Some("another-listener"),
+            &Page::Playlist("one".into()),
+            sort,
+            "desp",
+            (9, 5, 2)
+        ));
 
         // Cache miss on sort change
         let diff_sort = Some(TableSort {
@@ -2090,11 +2202,13 @@ mod tests {
                         220.0,
                     );
                     egui::ScrollArea::vertical().animated(false).show(ui, |ui| {
+                        let rows: Vec<_> =
+                            self.items.iter().map(TableItemRef::from_owned).collect();
                         table(
                             &mut self.app,
                             ui,
                             Table {
-                                items: &self.items,
+                                items: &rows,
                                 row_offset: 0,
                                 pagination: None,
                                 context: RowContext::Context {
@@ -2110,6 +2224,7 @@ mod tests {
                                 error: None,
                                 can_load_more: false,
                                 filter: &self.filter,
+                                source_generation: 0,
                                 items_revision: 0,
                             },
                         );
@@ -2312,47 +2427,12 @@ mod tests {
     }
 
     #[test]
-    fn table_row_cache_hits_until_revision_or_generation_changes() {
-        let mut app = test_app();
-        let mut builds = 0;
-        let page = Page::LikedSongs;
-        cached_table_items(&mut app, page.clone(), 1, 0, 0, || {
-            builds += 1;
-            make_test_tracks()
-        });
-        cached_table_items(&mut app, page.clone(), 1, 0, 0, || {
-            builds += 1;
-            panic!("cache hit rebuilt the table");
-        });
-        assert_eq!(builds, 1);
-        cached_table_items(&mut app, page.clone(), 1, 1, 0, || {
-            builds += 1;
-            make_test_tracks()
-        });
-        assert_eq!(builds, 2, "revision change must rebuild");
-        cached_table_items(&mut app, page, 2, 1, 0, || {
-            builds += 1;
-            make_test_tracks()
-        });
-        assert_eq!(builds, 3, "generation change must rebuild");
-    }
-
-    #[test]
-    fn table_row_cache_memory_counts_nested_metadata_on_a_large_collection() {
-        let mut app = test_app();
+    fn table_projection_borrows_canonical_playlist_rows() {
         let items = make_large_tracks(500);
-        let names_only = names_only_bytes(&items);
-        assert_eq!(app.table_rows_retained_bytes(), 0);
-        cached_table_items(&mut app, Page::LikedSongs, 0, 0, 0, || items);
-        let after = app.table_rows_retained_bytes();
-        assert!(
-            after > names_only,
-            "retained bytes must include nested album, artist, and image strings, not just titles: names_only={names_only} after={after}"
-        );
-        assert!(
-            after > 80_000,
-            "500 tracks with nested metadata should retain a substantial copy: {after}"
-        );
+        let rows: Vec<_> = items.iter().map(TableItemRef::from_owned).collect();
+        assert_eq!(rows.len(), items.len());
+        assert!(matches!(rows[0].materialize(), Cow::Borrowed(_)));
+        assert_eq!(rows[499].uri(), items[499].0.uri());
     }
 
     #[test]
@@ -2772,40 +2852,6 @@ mod tests {
             ),
             "expected PlayFromRow with filtered view, got {:?}",
             app.actions
-        );
-    }
-
-    #[test]
-    fn table_row_cache_drops_when_the_backing_page_is_evicted() {
-        let mut app = test_app();
-        let page = Page::Playlist("pl-gone".into());
-        app.playlist_pages
-            .insert("pl-gone".into(), PlaylistPage::default());
-        cached_table_items(&mut app, page.clone(), 1, 0, 0, make_test_tracks);
-        assert!(app.table_rows.contains_key(&page));
-        app.playlist_pages.remove("pl-gone");
-        app.open(Page::LikedSongs);
-        assert!(
-            !app.table_rows.contains_key(&page),
-            "evicting the page map must drop the table-row copy"
-        );
-    }
-
-    #[test]
-    fn table_row_cache_keeps_at_most_two_pages() {
-        let mut app = test_app();
-        for i in 0..5 {
-            let page = Page::Playlist(format!("pl{i}"));
-            app.playlist_pages
-                .insert(format!("pl{i}"), PlaylistPage::default());
-            app.history.push(page.clone());
-            app.history_index = app.history.len() - 1;
-            cached_table_items(&mut app, page, 1, 0, 0, make_test_tracks);
-        }
-        assert_eq!(app.table_rows.len(), 2);
-        assert!(
-            app.table_rows.contains_key(&Page::Playlist("pl4".into())),
-            "the open page stays"
         );
     }
 }

@@ -11,6 +11,34 @@ use crate::util;
 
 use super::widgets::{SliderEvent, thin_slider};
 
+const TRANSPORT_MIN_WIDTH: f32 = 260.0;
+const LEFT_MIN_WIDTH: f32 = 200.0;
+const EXTRAS_FULL_WIDTH: f32 = 292.0;
+const EXTRAS_COMPACT_WIDTH: f32 = 242.0;
+
+#[derive(Clone, Copy, Debug)]
+struct PlayerFit {
+    left: f32,
+    right: f32,
+    show_lyrics: bool,
+}
+
+fn player_fit(width: f32) -> PlayerFit {
+    let show_lyrics = width >= LEFT_MIN_WIDTH + TRANSPORT_MIN_WIDTH + EXTRAS_FULL_WIDTH;
+    let right = if show_lyrics {
+        EXTRAS_FULL_WIDTH
+    } else {
+        EXTRAS_COMPACT_WIDTH
+    };
+    let preferred_left = (width * 0.3).clamp(LEFT_MIN_WIDTH, 420.0);
+    let left = preferred_left.min((width - right - TRANSPORT_MIN_WIDTH).max(0.0));
+    PlayerFit {
+        left,
+        right,
+        show_lyrics,
+    }
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let tint = app.now_playing_tint();
@@ -36,12 +64,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             );
             let now = app.now_playing();
             let width = rect.width();
-            let side = (width * 0.3).clamp(200.0, 420.0);
+            let fit = player_fit(width);
             let cy = rect.center().y;
-            let left = Rect::from_min_max(rect.min, pos2(rect.left() + side, rect.bottom()));
+            let left = Rect::from_min_max(rect.min, pos2(rect.left() + fit.left, rect.bottom()));
             let center = Rect::from_min_max(
-                pos2(rect.left() + side, rect.top()),
-                pos2(rect.right() - side, rect.bottom()),
+                pos2(rect.left() + fit.left, rect.top()),
+                pos2(rect.right() - fit.right, rect.bottom()),
             );
 
             // egui's cross-axis centring is unreliable across nested layouts of
@@ -51,14 +79,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
             transport(app, ui, now.as_ref(), center);
 
-            let right_band =
-                Rect::from_min_size(pos2(rect.right() - side, cy - 15.0), vec2(side, 30.0));
+            let right_band = Rect::from_min_size(
+                pos2(rect.right() - fit.right, cy - 22.0),
+                vec2(fit.right, 44.0),
+            );
             let mut right_ui = ui.new_child(
                 UiBuilder::new()
                     .max_rect(right_band)
                     .layout(Layout::right_to_left(Align::Center)),
             );
-            extras(app, &mut right_ui, now.as_ref());
+            extras(app, &mut right_ui, now.as_ref(), fit.show_lyrics);
         });
 }
 
@@ -243,7 +273,7 @@ fn now_playing_block(app: &mut App, ui: &mut egui::Ui, region: Rect, now: Option
             title.size().x.max(subtitle.size().x).min(text_width)
         };
         let heart_x = (text_left + natural + 21.0).min(region.right() - 21.0);
-        let heart_rect = Rect::from_center_size(pos2(heart_x, cy), Vec2::splat(30.0));
+        let heart_rect = Rect::from_center_size(pos2(heart_x, cy), Vec2::splat(44.0));
         let mut heart_ui = ui.new_child(
             UiBuilder::new()
                 .max_rect(heart_rect)
@@ -278,26 +308,27 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         palette.dim
     };
 
-    // Button widths: icon buttons occupy icon size + 12; the disc is 36.
-    let widths = [29.0, 30.0, 36.0, 30.0, 29.0];
+    // Visible glyphs stay compact while every transport target is 44 points.
+    let widths = [44.0; 5];
     let gap = 10.0;
     let total: f32 = widths.iter().sum::<f32>() + gap * 4.0;
     let mut x = region.center().x - total / 2.0;
     let mut slot = |width: f32| {
-        let rect = Rect::from_center_size(pos2(x + width / 2.0, cy), vec2(width, 36.0));
+        let rect = Rect::from_center_size(pos2(x + width / 2.0, cy), vec2(width, 44.0));
         x += width + gap;
         rect
     };
-    let centered = |ui: &mut egui::Ui, rect: Rect| {
+    let centered = |ui: &mut egui::Ui, rect: Rect, id: &'static str| {
         ui.new_child(
             UiBuilder::new()
+                .id(egui::Id::new("player-transport").with(id))
                 .max_rect(rect)
                 .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
         )
     };
 
     let shuffle_color = if shuffle { palette.accent } else { dim };
-    let mut cell = centered(ui, slot(widths[0]));
+    let mut cell = centered(ui, slot(widths[0]), "shuffle");
     let shuffle_button = theme::icon_button(
         &mut cell,
         Icon::Shuffle,
@@ -322,7 +353,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         app.actions.push(Action::ToggleShuffle);
     }
 
-    let mut cell = centered(ui, slot(widths[1]));
+    let mut cell = centered(ui, slot(widths[1]), "previous");
     if theme::icon_button(
         &mut cell,
         Icon::SkipBackFilled,
@@ -339,8 +370,8 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
     let disc = slot(widths[2]);
     if loading || app.any_play_pending() {
         ui.painter()
-            .circle_filled(disc.center(), 18.0, palette.text);
-        let mut cell = centered(ui, disc);
+            .circle_filled(disc.center(), 22.0, palette.text);
+        let mut cell = centered(ui, disc, "play-pause");
         theme::spinner(&mut cell, 22.0, palette.window);
     } else {
         let icon = if playing {
@@ -353,19 +384,20 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         } else {
             palette.text
         };
-        let mut cell = centered(ui, disc);
+        let label = if playing {
+            gettext(app.locale, "Pause")
+        } else {
+            gettext(app.locale, "Play")
+        };
+        let mut cell = centered(ui, disc, "play-pause");
         if theme::circle_button(
             &mut cell,
             icon,
-            36.0,
+            44.0,
             palette.text,
             hover,
             palette.window,
-            &if playing {
-                gettext(app.locale, "Pause")
-            } else {
-                gettext(app.locale, "Play")
-            },
+            &label,
         )
         .clicked()
         {
@@ -373,7 +405,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         }
     }
 
-    let mut cell = centered(ui, slot(widths[3]));
+    let mut cell = centered(ui, slot(widths[3]), "next");
     if theme::icon_button(
         &mut cell,
         Icon::SkipForwardFilled,
@@ -400,7 +432,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
             gettext(app.locale, "Repeat off"),
         ),
     };
-    let mut cell = centered(ui, slot(widths[4]));
+    let mut cell = centered(ui, slot(widths[4]), "repeat");
     if theme::icon_button(
         &mut cell,
         repeat_icon,
@@ -420,7 +452,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
 
     // Progress row, just below the buttons (disc bottom + 6px gap + half of
     // the time text's line height).
-    let row_cy = cy + 31.0;
+    let row_cy = cy + 36.0;
     let slider_width = (region.width() - 120.0).clamp(120.0, 620.0);
     let (position, duration) = now
         .map(|now| (now.position_ms, now.duration_ms))
@@ -482,7 +514,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
     );
 }
 
-fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
+fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, show_lyrics: bool) {
     let palette = app.palette;
     ui.spacing_mut().item_spacing.x = 6.0;
     let volume = now
@@ -538,7 +570,6 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
     {
         app.actions.push(Action::ToggleMute);
     }
-    ui.add_space(4.0);
     let remote = now.is_some_and(|now| !now.local);
     let devices = theme::icon_button(
         ui,
@@ -575,20 +606,41 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
     {
         app.actions.push(Action::ToggleQueuePanel);
     }
-    if theme::icon_button(
-        ui,
-        Icon::Mic,
-        18.0,
-        if app.show_lyrics_panel {
-            palette.accent
-        } else {
-            palette.secondary
-        },
-        palette.text,
-        &gettext(app.locale, "Lyrics"),
-    )
-    .clicked()
+    if show_lyrics
+        && theme::icon_button(
+            ui,
+            Icon::Mic,
+            18.0,
+            if app.show_lyrics_panel {
+                palette.accent
+            } else {
+                palette.secondary
+            },
+            palette.text,
+            &gettext(app.locale, "Lyrics"),
+        )
+        .clicked()
     {
         app.actions.push(Action::ToggleLyricsPanel);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn player_regions_never_overlap_transport_at_supported_widths() {
+        for width in [728.0, 768.0, 868.0, 1248.0] {
+            let fit = player_fit(width);
+            assert!(fit.left + TRANSPORT_MIN_WIDTH + fit.right <= width);
+            assert!(fit.right >= EXTRAS_COMPACT_WIDTH);
+        }
+    }
+
+    #[test]
+    fn lyrics_moves_to_view_menu_only_at_the_narrowest_width() {
+        assert!(!player_fit(728.0).show_lyrics);
+        assert!(player_fit(768.0).show_lyrics);
     }
 }

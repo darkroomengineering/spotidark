@@ -20,6 +20,23 @@ source. **Local playback requires Spotify Premium.**
 These capabilities are inherited from Spotifast. Spotify account permissions,
 API availability, and librespot support still determine what works.
 
+## Interface
+
+The header keeps navigation, search, a **View** menu and your account menu.
+Open Settings from the account menu. View contains the Winamp mini player,
+MilkDrop and panel commands; their keyboard shortcuts still work. Choose the
+playback device from the player bar.
+In tight layouts, Search or Cmd/Ctrl+F opens a dedicated query row so controls
+remain usable beside the queue or lyrics panel. Search filters use a compact
+selector when the usual row cannot fit.
+
+Library filters use a compact selector when the sidebar is narrow. Settings
+keeps specialist controls in expandable sections, and personal-app setup opens
+when requested. **Settings → Appearance → Motion** follows the system preference
+on macOS and Windows, or lets you choose full or reduced motion explicitly.
+On Linux, choose reduced motion in the app. Reduced motion removes movement
+and scaling while retaining useful color feedback.
+
 ## Build and run
 
 This fork currently builds from source. Spotifast's Homebrew, AUR, Flatpak,

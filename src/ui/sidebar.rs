@@ -10,7 +10,7 @@ use crate::settings::{LIKED_SONGS_KEY, LibraryShelf as Filter, LibrarySort};
 use crate::theme::{self, Icon, Palette};
 
 const DEFAULT_ROW_HEIGHT: f32 = 60.0;
-const COMPACT_ROW_HEIGHT: f32 = 32.0;
+const COMPACT_ROW_HEIGHT: f32 = 44.0;
 
 struct Entry {
     image: Option<String>,
@@ -100,7 +100,13 @@ fn selected_sort(app: &App, shelf: Filter) -> LibrarySort {
     }
 }
 
-fn sort_menu(app: &mut App, ui: &mut egui::Ui, shelf: Filter, selected: LibrarySort) {
+fn sort_menu(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    shelf: Filter,
+    selected: LibrarySort,
+    compact: bool,
+) {
     let locale = app.locale;
     let labels = [
         (LibrarySort::Library, gettext(locale, "Library order")),
@@ -124,17 +130,27 @@ fn sort_menu(app: &mut App, ui: &mut egui::Ui, shelf: Filter, selected: LibraryS
         .find(|(sort, _)| *sort == selected)
         .expect("sort label")
         .1;
-    ui.add_space(4.0);
-    let response = ui.add(
-        egui::Button::image_and_text(
-            Icon::ChevronDown.image(app.palette.text, 15.0),
-            egui::RichText::new(label.as_ref()).font(theme::medium(13.0)),
+    let response = if compact {
+        theme::icon_button(
+            ui,
+            Icon::ChevronDown,
+            16.0,
+            app.palette.secondary,
+            app.palette.text,
+            &format!("Sort: {label}"),
         )
-        .wrap()
-        .fill(app.palette.surface)
-        .corner_radius(12)
-        .min_size(vec2(0.0, 28.0)),
-    );
+    } else {
+        ui.add(
+            egui::Button::image_and_text(
+                Icon::ChevronDown.image(app.palette.text, 15.0),
+                egui::RichText::new(label.as_ref()).font(theme::medium(13.0)),
+            )
+            .wrap()
+            .fill(app.palette.surface)
+            .corner_radius(12)
+            .min_size(vec2(44.0, 44.0)),
+        )
+    };
     egui::Popup::menu(&response)
         .frame(super::widgets::menu_frame(&app.palette))
         .show(|ui| {
@@ -167,6 +183,43 @@ fn sort_menu(app: &mut App, ui: &mut egui::Ui, shelf: Filter, selected: LibraryS
                 }
             }
         });
+}
+
+fn shelf_picker(app: &App, ui: &mut egui::Ui, filter: &mut Filter) {
+    let labels = [
+        (Filter::Playlists, gettext(app.locale, "Playlists")),
+        (Filter::Albums, gettext(app.locale, "Albums")),
+        (Filter::Artists, gettext(app.locale, "Artists")),
+        (Filter::Podcasts, gettext(app.locale, "Podcasts")),
+    ];
+    let selected = labels
+        .iter()
+        .find(|(value, _)| value == filter)
+        .map(|(_, label)| label.as_ref())
+        .unwrap_or("Playlists");
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = ui.spacing().interact_size.y.max(44.0);
+        let response = egui::ComboBox::from_id_salt("sidebar-library-shelf")
+            .selected_text(selected)
+            .width(112.0_f32.min(ui.available_width()))
+            .show_ui(ui, |ui| {
+                ui.spacing_mut().interact_size.y = ui.spacing().interact_size.y.max(44.0);
+                for (value, label) in &labels {
+                    if ui
+                        .selectable_label(*filter == *value, label.as_ref())
+                        .clicked()
+                    {
+                        *filter = *value;
+                    }
+                }
+            });
+        response.response.widget_info(|| {
+            let mut info =
+                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), selected);
+            info.current_text_value = Some(selected.to_owned());
+            info
+        });
+    });
 }
 
 fn saved_time(value: Option<&str>) -> Option<i64> {
@@ -481,13 +534,22 @@ fn nav_row(
     label: &str,
     active: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
     if ui.is_rect_visible(rect) {
-        let color = if active || response.hovered() {
+        let (hover, press) = theme::control_state(&response);
+        let color = if active {
             palette.text
         } else {
-            palette.secondary
+            palette.secondary.lerp_to_gamma(palette.text, hover)
         };
+        let fill = if active {
+            palette
+                .surface
+                .lerp_to_gamma(palette.surface_active, press * 0.35)
+        } else {
+            egui::Color32::TRANSPARENT.lerp_to_gamma(palette.surface_hover, hover * 0.65)
+        };
+        ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
         let icon_rect =
             Rect::from_center_size(pos2(rect.left() + 22.0, rect.center().y), Vec2::splat(22.0));
         icon.image(color, 22.0).paint_at(ui, icon_rect);
@@ -617,21 +679,32 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.add_space(6.0);
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-        for (value, label) in [
-            (Filter::Playlists, gettext(locale, "Playlists")),
-            (Filter::Albums, gettext(locale, "Albums")),
-            (Filter::Artists, gettext(locale, "Artists")),
-            (Filter::Podcasts, gettext(locale, "Podcasts")),
-        ] {
-            if theme::soft_button(ui, &palette, None, &label, filter == value).clicked() {
-                filter = value;
+    let narrow_library_controls = ui.available_width() < 320.0;
+    if narrow_library_controls {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            shelf_picker(app, ui, &mut filter);
+            let sort = selected_sort(app, filter);
+            sort_menu(app, ui, filter, sort, true);
+        });
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            for (value, label) in [
+                (Filter::Playlists, gettext(locale, "Playlists")),
+                (Filter::Albums, gettext(locale, "Albums")),
+                (Filter::Artists, gettext(locale, "Artists")),
+                (Filter::Podcasts, gettext(locale, "Podcasts")),
+            ] {
+                if theme::soft_button(ui, &palette, None, &label, filter == value).clicked() {
+                    filter = value;
+                }
             }
-        }
-    });
+            let sort = selected_sort(app, filter);
+            sort_menu(app, ui, filter, sort, false);
+        });
+    }
     let sort = selected_sort(app, filter);
-    sort_menu(app, ui, filter, sort);
     ui.data_mut(|data| {
         data.insert_temp(filter_id, filter);
         data.insert_temp(show_search_id, show_search);
@@ -949,32 +1022,40 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     );
                 }
                 // Animate rows around the current track or entry drop target.
+                let shift_target = if theme::motion_reduced(ui.ctx()) {
+                    0.0
+                } else if let Some(slot) = reorder_slot {
+                    if index < slot { -4.0 } else { 4.0 }
+                } else {
+                    match drop_target {
+                        Some(target) if index < target => -4.0,
+                        Some(target) if index > target => 4.0,
+                        _ => 0.0,
+                    }
+                };
                 let shift = ui.ctx().animate_value_with_time(
                     ui.id().with(("drop-shift", index)),
-                    if let Some(slot) = reorder_slot {
-                        if index < slot { -4.0 } else { 4.0 }
-                    } else {
-                        match drop_target {
-                            Some(target) if index < target => -4.0,
-                            Some(target) if index > target => 4.0,
-                            _ => 0.0,
-                        }
-                    },
-                    0.12,
+                    shift_target,
+                    theme::motion_time(ui.ctx(), 0.12),
                 );
                 let rect = rect.translate(vec2(0.0, shift));
                 // Set when the cover play button takes a click, so a double
                 // click on it does not also play from the row.
                 let mut cover_took_click = false;
                 if ui.is_rect_visible(rect) {
+                    let (hover, press) = theme::control_state(&response);
                     if active {
-                        ui.painter()
-                            .rect_filled(rect, CornerRadius::same(6), palette.surface);
-                    } else if response.hovered() {
+                        let fill = palette
+                            .surface
+                            .lerp_to_gamma(palette.surface_hover, hover)
+                            .lerp_to_gamma(palette.surface_active, press * 0.35);
+                        ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+                    } else if hover > 0.0 {
                         ui.painter().rect_filled(
                             rect,
                             CornerRadius::same(6),
-                            palette.surface_hover.gamma_multiply(0.6),
+                            egui::Color32::TRANSPARENT
+                                .lerp_to_gamma(palette.surface_hover.gamma_multiply(0.6), hover),
                         );
                     }
                     if drop_hover {
@@ -1111,11 +1192,12 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             )
                         });
                         let play_hover = play_response.as_ref().is_some_and(|play| play.hovered());
-                        if play_hover || (response.hovered() && can_play) {
+                        let play_reveal = if play_hover { 1.0 } else { hover };
+                        if play_reveal > 0.0 && can_play {
                             ui.painter().rect_filled(
                                 cover_rect,
                                 CornerRadius::same(if entry.round { 22 } else { 6 }),
-                                egui::Color32::from_black_alpha(120),
+                                egui::Color32::from_black_alpha((120.0 * play_reveal) as u8),
                             );
                             Icon::PlayFilled
                                 .image(

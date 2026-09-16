@@ -228,7 +228,7 @@ pub fn episode_row(
 
     // Footer: play, date, duration, progress.
     let footer_y = inner.bottom() - 16.0;
-    let button = Rect::from_center_size(pos2(text_left + 16.0, footer_y), Vec2::splat(32.0));
+    let button = Rect::from_center_size(pos2(text_left + 22.0, footer_y), Vec2::splat(44.0));
     let mut child = ui.new_child(
         UiBuilder::new()
             .max_rect(button)
@@ -241,11 +241,11 @@ pub fn episode_row(
         Icon::PlayFilled
     };
     if app.play_pending(&episode.uri) {
-        theme::circle_spinner(&mut child, 32.0, palette.text, palette.window, "Starting…");
+        theme::circle_spinner(&mut child, 44.0, palette.text, palette.window, "Starting…");
     } else if theme::circle_button(
         &mut child,
         icon,
-        32.0,
+        44.0,
         palette.text,
         if palette.dark {
             egui::Color32::WHITE

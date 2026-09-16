@@ -91,45 +91,38 @@ impl AudioTap {
         let (frames, _) = interleaved.as_chunks::<{ NUM_CHANNELS as usize }>();
         #[cfg(feature = "milkdrop")]
         let shm = self.shm.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        #[cfg(feature = "milkdrop")]
-        let mut stereo: Vec<f32> = if shm.is_some() {
-            Vec::with_capacity(frames.len() * 2)
-        } else {
-            Vec::new()
-        };
         for frame in frames {
             let mono = frame.iter().sum::<f64>() as f32 / frame.len() as f32 * gain;
             if samples.len() == KEPT {
                 samples.pop_front();
             }
             samples.push_back(mono);
-            #[cfg(feature = "milkdrop")]
-            if shm.is_some() {
-                stereo.push(frame[0] as f32 * gain);
-                stereo.push(frame[1] as f32 * gain);
-            }
         }
         #[cfg(feature = "milkdrop")]
         if let Some(ring) = &shm {
-            ring.push(&stereo);
+            ring.push_f64(frames, gain);
         }
     }
 
     /// The `count` samples ending `lag` samples before the newest, with
     /// silence where there is less than that.
     pub fn window(&self, count: usize, lag: usize) -> Vec<f32> {
+        let mut out = vec![0.0; count];
+        self.fill_window(&mut out, lag);
+        out
+    }
+
+    /// Fills a caller-owned window, reusing its storage across frames.
+    pub fn fill_window(&self, out: &mut [f32], lag: usize) {
         let samples = self.samples.lock().unwrap_or_else(|p| p.into_inner());
         let end = samples.len().saturating_sub(lag);
-        let start = end.saturating_sub(count);
-        let mut out = vec![0.0; count];
+        let start = end.saturating_sub(out.len());
+        out.fill(0.0);
         let taken = end - start;
-        for (slot, sample) in out[count - taken..]
-            .iter_mut()
-            .zip(samples.range(start..end))
-        {
+        let begin = out.len() - taken;
+        for (slot, sample) in out[begin..].iter_mut().zip(samples.range(start..end)) {
             *slot = *sample;
         }
-        out
     }
 
     pub fn clear(&self) {
@@ -368,17 +361,50 @@ impl Analyser {
     /// One frame: the spectrum of `samples` (512 of them, mono, -1 to 1)
     /// moves the bars, and the bars are returned.
     pub fn step(&mut self, samples: &[f32], now: Instant) -> [Bar; BARS] {
-        // Keep the step's own beat when frames come a little early or late,
-        // and never owe more than one step after a long gap.
-        let due = self.last_step.map_or(now, |last| last + STEP);
-        if now + Duration::from_millis(1) < due {
+        if !self.begin_step(now) {
             return self.bars;
         }
-        self.last_step = Some(due.max(now - STEP));
         self.wave.fill(0.0);
         for (slot, sample) in self.wave.iter_mut().zip(samples.iter()) {
             *slot = sample * CHANNEL_SUM;
         }
+        self.advance()
+    }
+
+    /// One frame read directly into the analyser's reusable wave buffer.
+    pub fn step_tap(
+        &mut self,
+        tap: &AudioTap,
+        sounding: bool,
+        lag: usize,
+        now: Instant,
+    ) -> [Bar; BARS] {
+        if !self.begin_step(now) {
+            return self.bars;
+        }
+        if sounding {
+            tap.fill_window(&mut self.wave, lag);
+            for sample in &mut self.wave {
+                *sample *= CHANNEL_SUM;
+            }
+        } else {
+            self.wave.fill(0.0);
+        }
+        self.advance()
+    }
+
+    fn begin_step(&mut self, now: Instant) -> bool {
+        // Keep the step's own beat when frames come a little early or late,
+        // and never owe more than one step after a long gap.
+        let due = self.last_step.map_or(now, |last| last + STEP);
+        if now + Duration::from_millis(1) < due {
+            return false;
+        }
+        self.last_step = Some(due.max(now - STEP));
+        true
+    }
+
+    fn advance(&mut self) -> [Bar; BARS] {
         self.fft.spectrum(&self.wave, &mut self.spectrum);
         let columns = self.bands();
         let mut bars = [Bar::default(); BARS];
@@ -529,6 +555,30 @@ mod tests {
         assert_eq!(tap.window(2, 1), [0.0, 1.0]);
         tap.clear();
         assert_eq!(tap.window(2, 0), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn reused_tap_windows_feed_the_same_analyser_signal() {
+        let tap = AudioTap::new();
+        let interleaved: Vec<f64> = (0..FFT_SAMPLES)
+            .flat_map(|index| {
+                let sample = (index as f64 * 0.03).sin();
+                [sample, sample * 0.5]
+            })
+            .collect();
+        tap.push(&interleaved, 0.75);
+        let expected = tap.window(FFT_SAMPLES, 0);
+        let now = Instant::now();
+        let mut from_slice = Analyser::default();
+        let mut from_tap = Analyser::default();
+
+        assert_eq!(
+            from_tap.step_tap(&tap, true, 0, now),
+            from_slice.step(&expected, now)
+        );
+        let mut reused = [f32::NAN; FFT_SAMPLES];
+        tap.fill_window(&mut reused, 0);
+        assert_eq!(reused.as_slice(), expected.as_slice());
     }
 
     #[test]

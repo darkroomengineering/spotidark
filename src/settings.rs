@@ -57,6 +57,39 @@ pub enum ThemeChoice {
     System,
 }
 
+/// How much interface motion Spotidark should use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MotionPreference {
+    /// Follow the desktop accessibility preference when it is available.
+    #[default]
+    System,
+    /// Keep the full set of short interface transitions.
+    Full,
+    /// Remove scale and travel while retaining colour and opacity feedback.
+    Reduced,
+}
+
+impl MotionPreference {
+    pub const ALL: [Self; 3] = [Self::System, Self::Full, Self::Reduced];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::System => "System default",
+            Self::Full => "Full motion",
+            Self::Reduced => "Reduced motion",
+        }
+    }
+
+    pub const fn reduced(self, system_reduced: bool) -> bool {
+        match self {
+            Self::System => system_reduced,
+            Self::Full => false,
+            Self::Reduced => true,
+        }
+    }
+}
+
 /// Whether a Home shelf is drawn. Hidden shelves still refresh normally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -186,6 +219,8 @@ pub struct Settings {
     pub audio_cache: bool,
     pub audio_cache_mb: u64,
     pub theme: ThemeChoice,
+    /// App-wide motion preference. Older files follow the desktop.
+    pub motion: MotionPreference,
     /// Filename selected from the local themes directory.
     pub custom_theme: Option<String>,
     /// Last accepted appearance, retained if its source file becomes unavailable.
@@ -352,6 +387,7 @@ impl Default for Settings {
             audio_cache: true,
             audio_cache_mb: 1024,
             theme: ThemeChoice::System,
+            motion: MotionPreference::System,
             custom_theme: None,
             custom_theme_cache: None,
             system_theme_cache: None,
@@ -1003,6 +1039,24 @@ mod tests {
     fn older_settings_default_to_standard_tracklist() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
         assert!(!settings.tracklist_compact);
+    }
+
+    #[test]
+    fn motion_preference_defaults_to_system_and_round_trips() {
+        let older: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(older.motion, super::MotionPreference::System);
+        assert!(!older.motion.reduced(false));
+        assert!(older.motion.reduced(true));
+
+        let settings = Settings {
+            motion: super::MotionPreference::Reduced,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.motion, super::MotionPreference::Reduced);
+        assert!(restored.motion.reduced(false));
+        assert!(!super::MotionPreference::Full.reduced(true));
     }
 
     #[test]

@@ -122,6 +122,14 @@ the background cache writer instead of making a separate copy. Cached files,
 image quality and the memory budget are unchanged. A failed cache write does
 not prevent the downloaded image from being displayed.
 
+Spotidark also limits encoded artwork to 8 MiB per file or response, with four
+concurrent transfers and two shared decoding jobs. Decoding rejects dimensions
+above 8192 pixels and uses a 64 MiB decoder allocation allowance. That allowance
+is a decoder safeguard, not a total process-memory limit. The existing 64 MiB
+artwork retention budget accounts for encoded bytes, decoded pixels and the
+estimated texture size together. Visible artwork remains protected. Oversized
+or invalid artwork leaves a placeholder; it does not block playback.
+
 The following Liked Songs caching behavior is on `main`, for the release
 since 0.8.0.
 
@@ -135,6 +143,11 @@ Like and Unlike change the rows immediately, and confirmed edits survive a
 restart even if Spotify's next read still reports the old state. This cache
 contains metadata, not offline audio, and can be deleted without signing out.
 
+In Spotidark, the displayed Liked Songs list and save checkpoints share the
+canonical song metadata. Cache reads and writes stream through small buffers
+on background workers. Existing version 1 cache files remain readable, and a
+failed write preserves the previous cache.
+
 The last good playlist folder tree is kept in `session.json`, scoped to the
 account that supplied it. This keeps folders visible when local playback is
 temporarily unavailable. Live session data is still required for edit grants.
@@ -146,6 +159,29 @@ playlist prefix when its snapshot still matches. Pending playlist edits and
 their rows stay in memory until the write and its snapshot are confirmed,
 even if this temporarily exceeds the usual page limit. Track metadata is
 limited to 800 cached tracks; navigation and periodic cleanup trim old entries.
+
+Spotidark additionally evicts inactive catalogue pages toward 6,000 retained
+rows and 64 MiB of estimated metadata. Detached cached windows within a list
+are trimmed toward 1,200 rows and 16 MiB. These are retention targets, not hard
+RAM caps: the open page, playing context, selected rows and pending edits stay
+available even when they exceed a target. Revisiting an evicted page reloads
+it. Table views borrow their source metadata and retain only one derived
+sorting/filtering cache. Secondary artwork colors and metadata caches are
+bounded separately.
+
+## Interface preferences in Spotidark
+
+Open Settings from the account menu. Playback and Appearance remain visible;
+specialist sections expand on demand. Settings search reveals matching
+controls, and requested personal-app setup or invalid input opens its section.
+Search keeps its query field and a compact filter selector available when side
+panels leave too little room for the normal header and filter row.
+
+**Appearance → Motion** stores `system`, `full` or `reduced` in the `motion`
+setting. Existing settings default to `system`. macOS and Windows use their
+native accessibility preference; Linux users can select `reduced` explicitly.
+Reduced motion removes scaling and animated travel, including lyric following
+and automatic scrolling, while retaining color and opacity feedback.
 
 The session remembers separate positions for the main window and the Winamp
 mini player. The shade modes are kept in `settings.json`. Wayland compositors

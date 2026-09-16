@@ -23,7 +23,7 @@ use crate::credentials::{
     Store as CredentialStore,
 };
 use crate::http::Http;
-use crate::images::{ArtLoader, accent_color};
+use crate::images::ArtLoader;
 use crate::model::PlaylistCache;
 use crate::paths::AppDirs;
 use crate::player::{Engine, EngineConfig, EngineEvent, LoadSpec, LocalState, PlayerCommand};
@@ -2913,15 +2913,9 @@ impl Worker {
         let events = self.events.clone();
         let waker = self.waker.clone();
         tokio::spawn(async move {
-            if let Ok(bytes) = art.fetch(&url).await {
-                let color = tokio::task::spawn_blocking(move || accent_color(&bytes))
-                    .await
-                    .ok()
-                    .flatten();
-                if let Some(color) = color {
-                    let _ = events.send(Event::Accent { url, color });
-                    waker.wake();
-                }
+            if let Some(color) = art.accent(&url).await {
+                let _ = events.send(Event::Accent { url, color });
+                waker.wake();
             }
         });
     }

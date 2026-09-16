@@ -102,13 +102,63 @@ pub const RADIUS_SMALL: u8 = 4;
 pub const ROW_HEIGHT: f32 = 56.0;
 pub const COMPACT_ROW_HEIGHT: f32 = 48.0;
 /// The compact track list: one line, no cover.
-pub const THIN_ROW_HEIGHT: f32 = 36.0;
+pub const THIN_ROW_HEIGHT: f32 = 44.0;
 pub const PLAYER_BAR_HEIGHT: f32 = 88.0;
 /// The narrowest either right-hand panel goes. The queue and the lyrics
 /// take the same edge and swap places there, so a width that suits one
 /// has to suit the other, or the window would jump on the swap.
 pub const SIDE_PANEL_MIN_WIDTH: f32 = 280.0;
 pub const TOP_BAR_HEIGHT: f32 = 56.0;
+const MOTION_REDUCED_ID: &str = "spotidark-motion-reduced";
+const CONTROL_HOVER_SECONDS: f32 = 0.12;
+const CONTROL_PRESS_SECONDS: f32 = 0.1;
+
+/// Makes the effective motion policy available to shared widgets for this frame.
+pub fn set_motion_reduced(ctx: &egui::Context, reduced: bool) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(MOTION_REDUCED_ID), reduced));
+    let seconds = if reduced { 0.0 } else { 0.12 };
+    let scroll_animation = if reduced {
+        egui::style::ScrollAnimation::none()
+    } else {
+        egui::style::ScrollAnimation::default()
+    };
+    let active_theme = ctx.theme();
+    let style = ctx.style_of(active_theme);
+    if (style.animation_time - seconds).abs() > f32::EPSILON
+        || style.scroll_animation != scroll_animation
+    {
+        ctx.style_mut_of(active_theme, |style| {
+            style.animation_time = seconds;
+            style.scroll_animation = scroll_animation;
+        });
+    }
+}
+
+pub fn motion_reduced(ctx: &egui::Context) -> bool {
+    ctx.data(|data| {
+        data.get_temp::<bool>(egui::Id::new(MOTION_REDUCED_ID))
+            .unwrap_or(false)
+    })
+}
+
+pub fn motion_time(ctx: &egui::Context, seconds: f32) -> f32 {
+    if motion_reduced(ctx) { 0.0 } else { seconds }
+}
+
+pub(crate) fn control_state(response: &Response) -> (f32, f32) {
+    let ctx = response.ctx.clone();
+    let hover = ctx.animate_bool_with_time(
+        response.id.with("hover"),
+        response.hovered() || response.has_focus(),
+        CONTROL_HOVER_SECONDS,
+    );
+    let press = ctx.animate_bool_with_time(
+        response.id.with("press"),
+        response.is_pointer_button_down_on(),
+        motion_time(&ctx, CONTROL_PRESS_SECONDS),
+    );
+    (hover, press)
+}
 
 /// macOS hides the titlebar and draws the window content all the way to the
 /// top edge, so whatever sits at the top of the window has to leave room for
@@ -636,21 +686,18 @@ pub fn icon_button(
     hover: Color32,
     tooltip: &str,
 ) -> Response {
-    let edge = size + 12.0;
+    let edge = (size + 12.0).max(44.0);
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(edge), Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip)
     });
     if ui.is_rect_visible(rect) {
-        let tint = if response.hovered() || response.has_focus() {
-            hover
-        } else {
-            color
-        };
-        let scale = if response.is_pointer_button_down_on() {
-            0.92
-        } else {
+        let (hovered, pressed) = control_state(&response);
+        let tint = color.lerp_to_gamma(hover, hovered);
+        let scale = if motion_reduced(ui.ctx()) {
             1.0
+        } else {
+            1.0 - 0.04 * pressed
         };
         paint_icon(ui, icon, rect, size * scale, tint);
     }
@@ -677,15 +724,19 @@ pub fn play_glyph_offset(icon: Icon, icon_size: f32) -> Vec2 {
 
 /// The app's mark, drawn with the packaged icon's rounded-square geometry.
 pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32, disc: Color32, glyph: Color32) {
-    let scale = diameter / 128.0;
-    let background = egui::Rect::from_center_size(center, Vec2::splat(124.0 * scale));
-    ui.painter().rect_filled(background, 28.0 * scale, disc);
+    let scale = diameter / crate::util::LOGO_SIZE;
+    let background = egui::Rect::from_center_size(
+        center,
+        Vec2::splat((crate::util::LOGO_SIZE - crate::util::LOGO_INSET * 2.0) * scale),
+    );
+    ui.painter()
+        .rect_filled(background, crate::util::LOGO_RADIUS * scale, disc);
+    let play_center = crate::util::LOGO_SIZE / 2.0;
     ui.painter().add(egui::Shape::convex_polygon(
-        vec![
-            center + Vec2::new(-14.0, -26.0) * scale,
-            center + Vec2::new(-14.0, 26.0) * scale,
-            center + Vec2::new(30.0, 0.0) * scale,
-        ],
+        crate::util::LOGO_PLAY
+            .into_iter()
+            .map(|(x, y)| center + Vec2::new(x - play_center, y - play_center) * scale)
+            .collect(),
         glyph,
         Stroke::NONE,
     ));
@@ -705,10 +756,14 @@ pub fn circle_button(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip)
     });
     if ui.is_rect_visible(rect) {
-        let hovered = response.hovered();
-        let grow = if hovered { 1.05 } else { 1.0 };
+        let (hovered, pressed) = control_state(&response);
+        let grow = if motion_reduced(ui.ctx()) {
+            1.0
+        } else {
+            1.0 + 0.025 * hovered - 0.035 * pressed
+        };
         let radius = diameter / 2.0 * grow;
-        let fill = if hovered { fill_hover } else { fill };
+        let fill = fill.lerp_to_gamma(fill_hover, hovered);
         ui.painter().circle_filled(rect.center(), radius, fill);
         let icon_size = diameter * 0.46;
         let offset = play_glyph_offset(icon, icon_size);
@@ -766,26 +821,27 @@ pub fn pill_button(ui: &mut egui::Ui, palette: &Palette, label: &str, primary: b
         palette.text
     };
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, color);
-    let padding = Vec2::new(18.0, 8.0);
+    let padding = Vec2::new(18.0, 14.0);
     let size = galley.size() + padding * 2.0;
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     if ui.is_rect_visible(rect) {
-        let hovered = response.hovered();
+        let (hovered, pressed) = control_state(&response);
         let radius = rect.height() / 2.0;
-        if primary {
-            let fill = if hovered {
-                palette.accent_hover
-            } else {
-                palette.accent
-            };
-            ui.painter().rect_filled(rect, radius, fill);
+        let paint_rect = if motion_reduced(ui.ctx()) {
+            rect
         } else {
-            let stroke_color = if hovered { palette.text } else { palette.dim };
+            rect.shrink(pressed * 1.0)
+        };
+        if primary {
+            let fill = palette.accent.lerp_to_gamma(palette.accent_hover, hovered);
+            ui.painter().rect_filled(paint_rect, radius, fill);
+        } else {
+            let stroke_color = palette.dim.lerp_to_gamma(palette.text, hovered);
             ui.painter().rect_stroke(
-                rect,
+                paint_rect,
                 radius,
                 Stroke::new(1.0, stroke_color),
                 egui::StrokeKind::Inside,
@@ -834,24 +890,50 @@ fn soft_button_inner(
         ui.painter()
             .layout_no_wrap(crate::bidi::display_text(label).into_owned(), font, color);
     let icon_size = 15.0;
-    let icon_width = if icon.is_some() { icon_size + 6.0 } else { 0.0 };
-    let padding = Vec2::new(12.0, 7.0);
-    let size = Vec2::new(galley.size().x + icon_width, galley.size().y) + padding * 2.0;
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let has_dismiss = dismissible && icon.is_some();
+    let icon_width = if icon.is_some() && !has_dismiss {
+        icon_size + 6.0
+    } else {
+        0.0
+    };
+    let padding = Vec2::new(12.0, 0.0);
+    let main_width = (galley.size().x + icon_width + padding.x * 2.0).max(44.0);
+    let size = Vec2::new(main_width + if has_dismiss { 44.0 } else { 0.0 }, 44.0);
+    let (rect, allocated) = ui.allocate_exact_size(
+        size,
+        if has_dismiss {
+            Sense::hover()
+        } else {
+            Sense::click()
+        },
+    );
+    let allocated_id = allocated.id;
+    let main_rect = if has_dismiss {
+        egui::Rect::from_min_max(egui::pos2(rect.left() + 44.0, rect.top()), rect.max)
+    } else {
+        rect
+    };
+    let response = if has_dismiss {
+        ui.interact(main_rect, allocated_id.with("main"), Sense::click())
+    } else {
+        allocated
+    };
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
+    let icon_center_x = if has_dismiss {
+        rect.left() + 22.0
+    } else {
+        rect.left() + padding.x + icon_size / 2.0
+    };
     let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + padding.x + icon_size / 2.0, rect.center().y),
+        egui::pos2(icon_center_x, rect.center().y),
         Vec2::splat(icon_size),
     );
-    // Claimed after the button, so the cross sits on top and keeps its own click.
-    let dismiss = (dismissible && icon.is_some()).then(|| {
-        let dismiss = ui.interact(
-            icon_rect.expand(3.0),
-            response.id.with("dismiss"),
-            Sense::click(),
-        );
+    let dismiss = has_dismiss.then(|| {
+        let dismiss_rect =
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 44.0, rect.bottom()));
+        let dismiss = ui.interact(dismiss_rect, allocated_id.with("dismiss"), Sense::click());
         dismiss.widget_info(|| {
             egui::WidgetInfo::labeled(
                 egui::WidgetType::Button,
@@ -866,16 +948,23 @@ fn soft_button_inner(
         .as_ref()
         .is_some_and(|dismiss| dismiss.hovered() || dismiss.has_focus());
     if ui.is_rect_visible(rect) {
+        let (animated_hover, pressed) = control_state(&response);
         let hovered = response.hovered() || over_dismiss;
         let fill = if active {
             palette.text
-        } else if hovered {
-            palette.surface_hover
         } else {
-            palette.surface
+            palette
+                .surface
+                .lerp_to_gamma(palette.surface_hover, animated_hover)
         };
-        ui.painter().rect_filled(rect, rect.height() / 2.0, fill);
-        let mut x = rect.left() + padding.x;
+        let paint_rect = if motion_reduced(ui.ctx()) {
+            rect
+        } else {
+            rect.shrink(pressed)
+        };
+        ui.painter()
+            .rect_filled(paint_rect, rect.height() / 2.0, fill);
+        let mut x = main_rect.left() + padding.x;
         if let Some(icon) = icon {
             let icon = if dismiss.is_some() && hovered {
                 Icon::X
@@ -883,7 +972,9 @@ fn soft_button_inner(
                 icon
             };
             icon.image(color, icon_size).paint_at(ui, icon_rect);
-            x += icon_width;
+            if !has_dismiss {
+                x += icon_width;
+            }
         }
         let pos = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
         ui.painter().galley(pos, galley, color);

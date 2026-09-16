@@ -5,7 +5,7 @@ use egui::{Align, CornerRadius, Frame, Layout, Margin, Stroke, Vec2};
 use crate::api::models::pick_image;
 use crate::app::App;
 use crate::model::{Action, Dialog};
-use crate::settings::{ProxyMode, ThemeChoice};
+use crate::settings::{MotionPreference, ProxyMode, ThemeChoice};
 use crate::theme::{self, Icon, Palette};
 
 use super::widgets;
@@ -186,6 +186,43 @@ fn section(
     ui.add_space(8.0);
 }
 
+fn specialist_section(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    title: &str,
+    default_open: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.add_space(8.0);
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = 44.0;
+        egui::CollapsingHeader::new(
+            egui::RichText::new(title)
+                .font(theme::bold(16.0))
+                .color(palette.text),
+        )
+        .id_salt(("settings-specialist", title))
+        .default_open(default_open)
+        .open(default_open.then_some(true))
+        .show(ui, |ui| {
+            ui.add_space(6.0);
+            Frame::new()
+                .fill(
+                    palette
+                        .surface
+                        .gamma_multiply(if palette.dark { 0.7 } else { 1.0 }),
+                )
+                .stroke(Stroke::new(1.0, palette.outline))
+                .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+                .inner_margin(Margin::symmetric(20, 16))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width().min(760.0));
+                    add_contents(ui);
+                });
+        });
+    });
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     ui.add_space(8.0);
@@ -226,6 +263,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let in_use = wanted
         .as_deref()
         .is_some_and(|wanted| app.web_app.as_deref() == Some(wanted));
+    let invalid_personal_app = wanted
+        .as_deref()
+        .is_some_and(|client_id| !crate::settings::valid_client_id(client_id));
+    let setup_requested = ui.data(|data| {
+        data.get_temp::<bool>(egui::Id::new(PERSONAL_APP_FOCUS_ID))
+            .unwrap_or(false)
+    });
     let account_rows = [
         RowText::new(
             "Personal Spotify app",
@@ -251,161 +295,202 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ];
     if section_matches(&needle, "Account", &account_rows) {
         any_visible = true;
-        section(ui, &palette, "Account", |ui| {
-            if row_matches(&needle, "Sign out Account", "") {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 14.0;
-                    let avatar = app
-                        .user
-                        .as_ref()
-                        .and_then(|user| pick_image(&user.images, 64).map(str::to_string));
-                    widgets::cover(ui, &palette, avatar.as_deref(), 56.0, 28.0, Icon::User);
-                    ui.vertical(|ui| {
-                        let name = app
+        specialist_section(
+            ui,
+            &palette,
+            "Account and personal app",
+            setup_requested || invalid_personal_app || !needle.is_empty(),
+            |ui| {
+                if row_matches(&needle, "Sign out Account", "") {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        let avatar = app
                             .user
                             .as_ref()
-                            .map(|user| user.name().to_string())
-                            .unwrap_or_default();
-                        theme::text(ui, name, theme::semibold(16.0), palette.text);
-                        let product = app
-                            .user
-                            .as_ref()
-                            .and_then(|user| user.product.clone())
-                            .map(|product| match product.as_str() {
-                                "premium" => "Spotify Premium".to_string(),
-                                "free" | "open" => {
-                                    "Spotify Free, local playback needs Premium".to_string()
-                                }
-                                other => other.to_string(),
-                            })
-                            .unwrap_or_default();
-                        theme::text(ui, product, theme::regular(13.0), palette.secondary);
-                        if let Some(username) =
-                            app.local.connected.then(|| app.local.username.clone())
-                            && !username.is_empty()
-                        {
-                            theme::text(
-                                ui,
-                                format!("Connected as {username}"),
-                                theme::regular(12.0),
-                                palette.dim,
-                            );
-                        }
+                            .and_then(|user| pick_image(&user.images, 64).map(str::to_string));
+                        widgets::cover(ui, &palette, avatar.as_deref(), 56.0, 28.0, Icon::User);
+                        ui.vertical(|ui| {
+                            let name = app
+                                .user
+                                .as_ref()
+                                .map(|user| user.name().to_string())
+                                .unwrap_or_default();
+                            theme::text(ui, name, theme::semibold(16.0), palette.text);
+                            let product = app
+                                .user
+                                .as_ref()
+                                .and_then(|user| user.product.clone())
+                                .map(|product| match product.as_str() {
+                                    "premium" => "Spotify Premium".to_string(),
+                                    "free" | "open" => {
+                                        "Spotify Free, local playback needs Premium".to_string()
+                                    }
+                                    other => other.to_string(),
+                                })
+                                .unwrap_or_default();
+                            theme::text(ui, product, theme::regular(13.0), palette.secondary);
+                            if let Some(username) =
+                                app.local.connected.then(|| app.local.username.clone())
+                                && !username.is_empty()
+                            {
+                                theme::text(
+                                    ui,
+                                    format!("Connected as {username}"),
+                                    theme::regular(12.0),
+                                    palette.dim,
+                                );
+                            }
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if theme::pill_button(ui, &palette, "Sign out", false).clicked() {
+                                app.actions.push(Action::SignOut);
+                            }
+                        });
                     });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if theme::pill_button(ui, &palette, "Sign out", false).clicked() {
-                            app.actions.push(Action::SignOut);
-                        }
-                    });
-                });
-                ui.add_space(10.0);
-            }
-            if account_rows[0].matches(&needle, "Account")
-                || account_rows[1].matches(&needle, "Account")
-            {
-                personal_app_instructions(ui, &palette, &mut app.actions);
-                ui.add_space(10.0);
-            }
-            let mut client_id = app.settings.web_client_id.clone().unwrap_or_default();
-            filtered_row(ui, &palette, &needle, "Account", &account_rows[0], |ui| {
-                let response = Frame::new()
-                    .fill(palette.surface)
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        widgets::text_edit(
-                            ui,
-                            egui::TextEdit::singleline(&mut client_id)
-                                .id(egui::Id::new("personal-web-client-id"))
-                                .hint_text(egui::RichText::new("Client ID").color(palette.dim))
-                                .font(theme::regular(13.0))
-                                .frame(egui::Frame::NONE)
-                                .desired_width(200.0),
-                        )
-                    })
-                    .inner;
-                response.widget_info(|| {
-                    let mut info = egui::WidgetInfo::text_edit(
-                        ui.is_enabled(),
-                        app.settings.web_client_id.as_deref().unwrap_or_default(),
-                        &client_id,
-                        "Client ID",
+                    ui.add_space(10.0);
+                }
+                let setup_open_id = egui::Id::new("personal-app-setup-open");
+                let mut setup_open = ui
+                    .data(|data| data.get_temp::<bool>(setup_open_id))
+                    .unwrap_or(setup_requested || invalid_personal_app);
+                if !setup_open && account_rows[1].matches(&needle, "Account") {
+                    widgets::setting_row(
+                        ui,
+                        &palette,
+                        if in_use {
+                            "Personal app ready"
+                        } else {
+                            "Personal Spotify app"
+                        },
+                        if in_use {
+                            "Supported requests use your developer quota."
+                        } else {
+                            "Optional. Use your own developer quota for supported requests."
+                        },
+                        |ui| {
+                            if theme::soft_button(ui, &palette, None, "Setup", false).clicked() {
+                                setup_open = true;
+                            }
+                        },
                     );
-                    info.label = Some("Client ID".into());
-                    info
-                });
-                if ui
-                    .data_mut(|data| data.remove_temp::<bool>(egui::Id::new(PERSONAL_APP_FOCUS_ID)))
-                    .unwrap_or(false)
+                }
+                if setup_open
+                    && (account_rows[0].matches(&needle, "Account")
+                        || account_rows[1].matches(&needle, "Account"))
                 {
-                    response.scroll_to_me(Some(Align::Center));
-                    response.request_focus();
+                    personal_app_instructions(ui, &palette, &mut app.actions);
+                    ui.add_space(10.0);
                 }
-                if response.changed() {
-                    app.actions
-                        .push(Action::SetPersonalWebClientId(client_id.clone()));
-                }
-            });
-            let valid = crate::settings::valid_client_id(&client_id);
-            if !valid && !client_id.trim().is_empty() && account_rows[0].matches(&needle, "Account")
-            {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(crate::settings::CLIENT_ID_HINT)
-                            .font(theme::regular(13.0))
-                            .color(palette.secondary),
-                    )
-                    .wrap(),
-                );
-            }
-            if in_use {
-                filtered_row(ui, &palette, &needle, "Account", &account_rows[2], |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new("Remove")
-                                .min_size(egui::vec2(0.0, 44.0))
-                                .corner_radius(22),
-                        )
-                        .clicked()
+                ui.data_mut(|data| data.insert_temp(setup_open_id, setup_open));
+                if setup_open || !needle.is_empty() {
+                    let mut client_id = app.settings.web_client_id.clone().unwrap_or_default();
+                    filtered_row(ui, &palette, &needle, "Account", &account_rows[0], |ui| {
+                        let response = Frame::new()
+                            .fill(palette.surface)
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                widgets::text_edit(
+                                    ui,
+                                    egui::TextEdit::singleline(&mut client_id)
+                                        .id(egui::Id::new("personal-web-client-id"))
+                                        .hint_text(
+                                            egui::RichText::new("Client ID").color(palette.dim),
+                                        )
+                                        .font(theme::regular(13.0))
+                                        .frame(egui::Frame::NONE)
+                                        .desired_width(200.0),
+                                )
+                            })
+                            .inner;
+                        response.widget_info(|| {
+                            let mut info = egui::WidgetInfo::text_edit(
+                                ui.is_enabled(),
+                                app.settings.web_client_id.as_deref().unwrap_or_default(),
+                                &client_id,
+                                "Client ID",
+                            );
+                            info.label = Some("Client ID".into());
+                            info
+                        });
+                        if ui
+                            .data_mut(|data| {
+                                data.remove_temp::<bool>(egui::Id::new(PERSONAL_APP_FOCUS_ID))
+                            })
+                            .unwrap_or(false)
+                        {
+                            response.scroll_to_me(Some(Align::Center));
+                            response.request_focus();
+                        }
+                        if response.changed() {
+                            app.actions
+                                .push(Action::SetPersonalWebClientId(client_id.clone()));
+                        }
+                    });
+                    let valid = crate::settings::valid_client_id(&client_id);
+                    if !valid
+                        && !client_id.trim().is_empty()
+                        && account_rows[0].matches(&needle, "Account")
                     {
-                        app.actions
-                            .push(Action::SetPersonalWebClientId(String::new()));
-                        app.actions.push(Action::ConfigurePersonalWebApp);
-                    }
-                });
-            } else {
-                filtered_row(ui, &palette, &needle, "Account", &account_rows[3], |ui| {
-                    if ui
-                        .add_enabled(
-                            valid,
-                            egui::Button::new(
-                                egui::RichText::new("Authorize").color(palette.on_accent),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(crate::settings::CLIENT_ID_HINT)
+                                    .font(theme::regular(13.0))
+                                    .color(palette.secondary),
                             )
-                            .fill(palette.accent)
-                            .min_size(egui::vec2(0.0, 44.0))
-                            .corner_radius(22),
-                        )
-                        .clicked()
-                    {
-                        app.actions.push(Action::ConfigurePersonalWebApp);
+                            .wrap(),
+                        );
                     }
-                });
-            }
-            if !in_use && wanted.is_none() && app.web_app.is_some() {
-                filtered_row(ui, &palette, &needle, "Account", &account_rows[4], |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new("Remove")
-                                .min_size(egui::vec2(0.0, 44.0))
-                                .corner_radius(22),
-                        )
-                        .clicked()
-                    {
-                        app.actions.push(Action::ConfigurePersonalWebApp);
+                    if in_use {
+                        filtered_row(ui, &palette, &needle, "Account", &account_rows[2], |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new("Remove")
+                                        .min_size(egui::vec2(0.0, 44.0))
+                                        .corner_radius(22),
+                                )
+                                .clicked()
+                            {
+                                app.actions
+                                    .push(Action::SetPersonalWebClientId(String::new()));
+                                app.actions.push(Action::ConfigurePersonalWebApp);
+                            }
+                        });
+                    } else {
+                        filtered_row(ui, &palette, &needle, "Account", &account_rows[3], |ui| {
+                            if ui
+                                .add_enabled(
+                                    valid,
+                                    egui::Button::new(
+                                        egui::RichText::new("Authorize").color(palette.on_accent),
+                                    )
+                                    .fill(palette.accent)
+                                    .min_size(egui::vec2(0.0, 44.0))
+                                    .corner_radius(22),
+                                )
+                                .clicked()
+                            {
+                                app.actions.push(Action::ConfigurePersonalWebApp);
+                            }
+                        });
                     }
-                });
-            }
-        });
+                    if !in_use && wanted.is_none() && app.web_app.is_some() {
+                        filtered_row(ui, &palette, &needle, "Account", &account_rows[4], |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new("Remove")
+                                        .min_size(egui::vec2(0.0, 44.0))
+                                        .corner_radius(22),
+                                )
+                                .clicked()
+                            {
+                                app.actions.push(Action::ConfigurePersonalWebApp);
+                            }
+                        });
+                    }
+                }
+            },
+        );
     }
 
     let (status, detail, action) = match &app.local_playback {
@@ -499,14 +584,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 },
             );
-            filtered_row(
-                ui,
-                &palette,
-                &needle,
-                "Playback on this computer",
-                &playback_rows[2],
-                |ui| {
-                    ui.horizontal(|ui| {
+            if playback_rows[2].matches(&needle, "Playback on this computer") {
+                ui.vertical(|ui| {
+                    theme::text(
+                        ui,
+                        playback_rows[2].title.as_ref(),
+                        theme::medium(14.0),
+                        palette.text,
+                    );
+                    theme::text(
+                        ui,
+                        playback_rows[2].description.as_ref(),
+                        theme::regular(12.5),
+                        palette.secondary,
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         for (kbps, label) in [
                             (320u16, "Very high · 320 kbps"),
@@ -529,8 +622,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             }
                         }
                     });
-                },
-            );
+                });
+                ui.add_space(10.0);
+            }
             filtered_row(
                 ui,
                 &palette,
@@ -784,6 +878,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             "Use the current cover's colour on pages and the player bar.",
         ),
         RowText::new(
+            "Motion",
+            "Use the desktop accessibility setting where available, or choose a preference.",
+        ),
+        RowText::new(
             "Compact library sidebar",
             "Show names without covers in the sidebar.",
         ),
@@ -898,6 +996,34 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 "Appearance",
                 &appearance_rows[2],
                 |ui| {
+                    let selected = app.settings.motion.label();
+                    egui::ComboBox::from_id_salt("appearance_motion")
+                        .selected_text(selected)
+                        .width(160.0_f32.min(ui.available_width()))
+                        .show_ui(ui, |ui| {
+                            for preference in MotionPreference::ALL {
+                                if ui
+                                    .selectable_label(
+                                        app.settings.motion == preference,
+                                        preference.label(),
+                                    )
+                                    .clicked()
+                                    && app.settings.motion != preference
+                                {
+                                    app.settings.motion = preference;
+                                    changed = true;
+                                }
+                            }
+                        });
+                },
+            );
+            filtered_row(
+                ui,
+                &palette,
+                &needle,
+                "Appearance",
+                &appearance_rows[3],
+                |ui| {
                     if widgets::switch(
                         ui,
                         &palette,
@@ -915,7 +1041,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 &palette,
                 &needle,
                 "Appearance",
-                &appearance_rows[3],
+                &appearance_rows[4],
                 |ui| {
                     if widgets::switch(
                         ui,
@@ -934,7 +1060,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 &palette,
                 &needle,
                 "Appearance",
-                &appearance_rows[4],
+                &appearance_rows[5],
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
@@ -969,7 +1095,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if section_matches(&needle, "Proxy", &proxy_rows) {
         any_visible = true;
         ui.push_id("proxy-settings", |ui| {
-    section(ui, &palette, "Proxy", |ui| {
+    specialist_section(ui, &palette, "Proxy", !needle.is_empty(), |ui| {
         widgets::setting_row(
             ui,
             &palette,
@@ -1089,7 +1215,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ];
     if section_matches(&needle, "Winamp skins", &skins_rows) {
         any_visible = true;
-        section(ui, &palette, "Winamp skins", |ui| {
+        specialist_section(ui, &palette, "Winamp skins", !needle.is_empty(), |ui| {
             filtered_row(
                 ui,
                 &palette,
@@ -1279,7 +1405,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ];
     if section_matches(&needle, "MilkDrop", &milkdrop_rows) {
         any_visible = true;
-        section(ui, &palette, "MilkDrop", |ui| {
+        specialist_section(ui, &palette, "MilkDrop", !needle.is_empty(), |ui| {
             filtered_row(ui, &palette, &needle, "MilkDrop", &milkdrop_rows[0], |ui| {
                 let mut open = app.settings.milkdrop_open;
                 if widgets::switch(ui, &palette, "MilkDrop window", &mut open).changed() {
@@ -1419,7 +1545,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ];
     if section_matches(&needle, "Equalizer", &equalizer_rows) {
         any_visible = true;
-        section(ui, &palette, "Equalizer", |ui| {
+        specialist_section(ui, &palette, "Equalizer", !needle.is_empty(), |ui| {
             filtered_row(
                 ui,
                 &palette,
@@ -1491,7 +1617,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ];
     if section_matches(&needle, "Storage", &storage_rows) {
         any_visible = true;
-        section(ui, &palette, "Storage", |ui| {
+        specialist_section(ui, &palette, "Storage", !needle.is_empty(), |ui| {
             filtered_row(ui, &palette, &needle, "Storage", &storage_rows[0], |ui| {
                 if theme::soft_button(ui, &palette, Some(Icon::Trash), "Clear artwork", false)
                     .clicked()
@@ -1523,7 +1649,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ];
     if section_matches(&needle, "About", &about_rows) {
         any_visible = true;
-        section(ui, &palette, "About", |ui| {
+        specialist_section(ui, &palette, "About", !needle.is_empty(), |ui| {
             ui.horizontal(|ui| {
                 let (logo, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
                 theme::logo(ui, logo.center(), 40.0, palette.accent, palette.on_accent);

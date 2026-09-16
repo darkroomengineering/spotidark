@@ -18,11 +18,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     ui.add_space(4.0);
-    let options: Vec<(SearchFilter, &str)> =
-        SearchFilter::ALL.iter().map(|f| (*f, f.label())).collect();
-    if let Some(filter) = widgets::chips(ui, &palette, &options, app.search.filter) {
-        app.actions.push(Action::SetSearchFilter(filter));
-    }
+    filters(app, ui);
     ui.add_space(12.0);
     let pending = app.search.catalogue_pending || app.search.playlists_pending;
     if pending {
@@ -68,6 +64,63 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         SearchFilter::Playlists => playlists_grid(app, ui, &results),
         SearchFilter::Podcasts => shows_grid(app, ui, &results),
         SearchFilter::Episodes => episodes(app, ui, &results, usize::MAX),
+    }
+}
+
+fn filters(app: &mut App, ui: &mut egui::Ui) {
+    let options: Vec<_> = SearchFilter::ALL
+        .iter()
+        .map(|filter| (*filter, filter.label()))
+        .collect();
+    let chips_width = options
+        .iter()
+        .map(|(_, label)| {
+            (ui.painter()
+                .layout_no_wrap((*label).into(), theme::medium(13.0), app.palette.text)
+                .size()
+                .x
+                + 24.0)
+                .max(44.0)
+        })
+        .sum::<f32>()
+        + 8.0 * options.len().saturating_sub(1) as f32;
+    if ui.available_width() >= chips_width {
+        if let Some(filter) = widgets::chips(ui, &app.palette, &options, app.search.filter) {
+            app.actions.push(Action::SetSearchFilter(filter));
+        }
+        return;
+    }
+
+    let selected = app.search.filter.label();
+    let mut changed = None;
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = ui.spacing().interact_size.y.max(44.0);
+        let response = egui::ComboBox::from_id_salt("search-filter-picker")
+            .selected_text(selected)
+            .width(ui.available_width().min(220.0))
+            .show_ui(ui, |ui| {
+                ui.spacing_mut().interact_size.y = ui.spacing().interact_size.y.max(44.0);
+                for (filter, label) in &options {
+                    if ui
+                        .selectable_label(app.search.filter == *filter, *label)
+                        .clicked()
+                    {
+                        changed = Some(*filter);
+                    }
+                }
+            });
+        response.response.widget_info(|| {
+            let mut info = egui::WidgetInfo::labeled(
+                egui::WidgetType::ComboBox,
+                ui.is_enabled(),
+                "Search filter",
+            );
+            info.current_text_value = Some(selected.to_owned());
+            info
+        });
+    });
+    if let Some(filter) = changed {
+        app.actions.push(Action::SetSearchFilter(filter));
     }
 }
 
@@ -275,40 +328,56 @@ fn top_result(
         };
         ui.painter()
             .rect_filled(rect, CornerRadius::same(theme::RADIUS), fill);
-        let image_rect = Rect::from_min_size(rect.min + vec2(20.0, 20.0), Vec2::splat(96.0));
-        widgets::paint_shadow(ui, &palette, image_rect, if round { 48.0 } else { 6.0 });
+        let compact = rect.width() < 200.0;
+        let padding = if compact { 12.0 } else { 20.0 };
+        let image_size = (rect.width() - padding * 2.0).clamp(1.0, 96.0);
+        let image_rect =
+            Rect::from_min_size(rect.min + Vec2::splat(padding), Vec2::splat(image_size));
+        let radius = if round { image_size / 2.0 } else { 6.0 };
+        widgets::paint_shadow(ui, &palette, image_rect, radius);
         widgets::paint_cover(
             ui,
             &palette,
             image,
             image_rect,
-            if round { 48.0 } else { 6.0 },
+            radius,
             if round { Icon::User } else { Icon::Music },
             Some(app.backend.art()),
         );
         let text_clip = Rect::from_min_max(
-            pos2(rect.left() + 20.0, image_rect.bottom() + 12.0),
-            pos2(rect.right() - 20.0, rect.bottom()),
+            pos2(rect.left() + padding, image_rect.bottom() + 12.0),
+            pos2(rect.right() - padding, rect.bottom()),
         );
         let painter = ui.painter().with_clip_rect(text_clip);
-        crate::bidi::paint_line(
-            &painter,
-            text_clip.left(),
-            text_clip.right(),
-            text_clip.top() + 16.0,
-            title,
-            theme::bold(26.0),
-            palette.text,
-        );
-        crate::bidi::paint_line(
-            &painter,
-            text_clip.left(),
-            text_clip.right(),
-            text_clip.top() + 46.0,
-            subtitle,
-            theme::regular(13.5),
-            palette.secondary,
-        );
+        for (text, font, color, y) in [
+            (
+                title,
+                theme::bold(if compact { 20.0 } else { 26.0 }),
+                palette.text,
+                text_clip.top() + 16.0,
+            ),
+            (
+                subtitle,
+                theme::regular(13.5),
+                palette.secondary,
+                text_clip.top() + 46.0,
+            ),
+        ] {
+            let galley = crate::bidi::layout(
+                &painter,
+                text,
+                font,
+                color,
+                text_clip.width(),
+                1,
+                Some(crate::bidi::ELLIPSIS),
+            );
+            let bounds = Rect::from_min_size(
+                pos2(text_clip.left(), y - galley.size().y / 2.0),
+                vec2(text_clip.width(), galley.size().y),
+            );
+            painter.galley(crate::bidi::galley_pos(bounds, &galley), galley, color);
+        }
         if hovered && let Some(uri) = &play_uri {
             let button = Rect::from_center_size(
                 pos2(rect.right() - 44.0, rect.bottom() - 44.0),

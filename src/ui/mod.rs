@@ -31,6 +31,12 @@ use crate::theme::{self, Icon};
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let ctx = &ctx;
+    let reduced = app
+        .settings
+        .motion
+        .reduced(crate::util::system_reduced_motion());
+    app.lyrics_reduce_motion = reduced;
+    theme::set_motion_reduced(ctx, reduced);
     keys::handle(app, ctx);
     for path in winamp::dropped_skins(ctx) {
         app.actions.push(Action::InstallSkin(path));
