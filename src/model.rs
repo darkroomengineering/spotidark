@@ -984,6 +984,7 @@ pub enum Action {
     /// Add, replace, or remove the optional personal Web API app.
     ConfigurePersonalWebApp,
     OpenPersonalAppSetup,
+    CopyPersonalAppRedirect,
     ToggleSidebar,
     ToggleQueuePanel,
     ToggleLyricsPanel,

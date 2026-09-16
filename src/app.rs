@@ -7350,6 +7350,10 @@ impl App {
                     self.settings.web_client_id.clone(),
                 ));
             }
+            Action::CopyPersonalAppRedirect => {
+                ctx.copy_text(crate::auth::Grant::shared_web_api().redirect_uri());
+                self.toast("Redirect URI copied");
+            }
             Action::OpenPersonalAppSetup => {
                 self.settings.personal_app_intro_seen = true;
                 self.settings_dirty = true;

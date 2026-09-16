@@ -35,14 +35,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::PersonalAppIntro => {
                     theme::text(ui, "Spend less time waiting for Spotify", theme::bold(20.0), palette.text);
                     ui.add_space(12.0);
-                    for text in [
-                        "Spotidark's default connection shares Spotify's request limit with other listeners. When it gets busy, loading music and using playback controls can take longer.",
-                        "Your Premium account lets you create a free personal Spotify app. Connect it here to give supported requests your own allowance. Some pages still use the shared connection.",
-                        "Setup takes a few minutes. You can also find it later in Settings under Personal Spotify app.",
-                    ] {
-                        ui.add(egui::Label::new(egui::RichText::new(text).font(theme::regular(14.0)).color(palette.secondary)).wrap());
-                        ui.add_space(10.0);
-                    }
+                    egui::ScrollArea::vertical()
+                        .max_height((ctx.content_rect().height() - 220.0).max(160.0))
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(egui::RichText::new("Create a free personal Spotify app with your Premium account. Supported requests use your allowance; some pages still use the shared connection.").color(palette.secondary)).wrap());
+                            ui.add_space(10.0);
+                            super::settings::personal_app_instructions(ui, &palette, &mut app.actions);
+                            ui.add_space(8.0);
+                            ui.add(egui::Label::new("Choose Set up personal app to enter your Client ID in Settings.").wrap());
+                        });
                     ui.add_space(8.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if theme::pill_button(ui, &palette, "Set up personal app", true).clicked() {

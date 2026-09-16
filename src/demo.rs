@@ -1708,6 +1708,122 @@ mod tests {
     }
 
     #[test]
+    fn personal_app_instructions_explain_setup_and_apply_copy_action() {
+        use egui::accesskit::{Action as AccessibleAction, Role};
+
+        for dialog in [false, true] {
+            let (ctx, mut app) = accessible_app(&format!("personal-app-instructions-{dialog}"));
+            app.open(Page::Settings);
+            if dialog {
+                app.dialog = Some(Dialog::PersonalAppIntro);
+            }
+            let view = |app: &mut App, ui: &mut egui::Ui| app.frame_ui(ui);
+            view_frame(&ctx, &mut app, vec![], view);
+            let text = view_frame(&ctx, &mut app, vec![], view);
+            for expected in [
+                "1. Open developer.spotify.com/dashboard and click Create app.",
+                "2. Name: must not start with \"Spot\". Try \"Darkroom Desktop Player\".",
+                "3. Redirect URIs: add exactly:",
+                "http://127.0.0.1:8989/login",
+                "4. Tick Web API, accept the terms, Save.",
+                "5. Copy the Client ID, paste it below, click Authorize.",
+                "Development Mode: 5 allow-listed users. Quota is per developer account. Each developer needs their own app; do not share one Client ID.",
+            ] {
+                assert!(
+                    text.iter().any(|(text, _)| text == expected),
+                    "missing {expected}"
+                );
+            }
+            {
+                let label = "Copy redirect URI";
+                accessible_frame(&ctx, &mut app, vec![]);
+                let tree = accessible_frame(&ctx, &mut app, vec![]);
+                let button = accessible_node(&tree, label, Role::Button);
+                let output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1280.0, 800.0),
+                        )),
+                        events: vec![accessible_action(button, AccessibleAction::Click, None)],
+                        ..Default::default()
+                    },
+                    |ui| app.frame_ui(ui),
+                );
+                assert!(
+                    output
+                        .platform_output
+                        .commands
+                        .iter()
+                        .any(|command| match command {
+                            egui::OutputCommand::CopyText(text) =>
+                                text == "http://127.0.0.1:8989/login",
+                            _ => false,
+                        }),
+                    "{label} must apply its action"
+                );
+            }
+            app.backend.shutdown();
+        }
+    }
+
+    #[test]
+    fn personal_app_instruction_links_emit_the_expected_urls() {
+        use egui::accesskit::{Action as AccessibleAction, Role};
+
+        for (label, role, expected) in [
+            (
+                "Open dashboard",
+                Role::Button,
+                "https://developer.spotify.com/dashboard",
+            ),
+            (
+                "Setup guide",
+                Role::Button,
+                "https://spotifast.rocks/make-it-even-faster/",
+            ),
+        ] {
+            let (ctx, mut app) = accessible_app(&format!("personal-app-link-{label}"));
+            let mut actions = Vec::new();
+            let mut frame = |events| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(760.0, 800.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        crate::ui::settings::personal_app_instructions(
+                            ui,
+                            &app.palette,
+                            &mut actions,
+                        )
+                    },
+                );
+                output.textures_delta.clear();
+                output
+            };
+            frame(vec![]);
+            let output = frame(vec![]);
+            let tree = output
+                .platform_output
+                .accesskit_update
+                .expect("screen-reader tree");
+            let button = accessible_node(&tree, label, role);
+            frame(vec![accessible_action(
+                button,
+                AccessibleAction::Click,
+                None,
+            )]);
+            assert!(matches!(actions.as_slice(), [Action::OpenUrl(url)] if url == expected));
+            app.backend.shutdown();
+        }
+    }
+
+    #[test]
     fn personal_app_intro_can_be_dismissed_or_open_setup_with_keyboard_focus() {
         use egui::accesskit::{Action as AccessibleAction, Role};
 

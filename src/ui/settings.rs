@@ -14,6 +14,84 @@ const PLAYBACK_DIRTY_ID: &str = "playback-settings-dirty";
 pub(crate) const PERSONAL_APP_FOCUS_ID: &str = "focus-personal-app-setup";
 const SETTINGS_FILTER_ID: &str = "settings-filter";
 
+/// The same setup instructions are available before and during configuration.
+pub(crate) fn personal_app_instructions(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    for text in [
+        "1. Open developer.spotify.com/dashboard and click Create app.",
+        "2. Name: must not start with \"Spot\". Try \"Darkroom Desktop Player\".",
+        "3. Redirect URIs: add exactly:",
+    ] {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(theme::regular(13.0))
+                    .color(palette.secondary),
+            )
+            .wrap(),
+        );
+        ui.add_space(2.0);
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.monospace(crate::auth::Grant::shared_web_api().redirect_uri());
+        if ui
+            .add(
+                egui::Button::new("Copy redirect URI")
+                    .min_size(egui::vec2(0.0, 44.0))
+                    .corner_radius(22),
+            )
+            .clicked()
+        {
+            actions.push(Action::CopyPersonalAppRedirect);
+        }
+    });
+    for text in [
+        "4. Tick Web API, accept the terms, Save.",
+        "5. Copy the Client ID, paste it below, click Authorize.",
+        "Development Mode: 5 allow-listed users. Quota is per developer account. Each developer needs their own app; do not share one Client ID.",
+    ] {
+        ui.add_space(2.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(theme::regular(13.0))
+                    .color(palette.secondary),
+            )
+            .wrap(),
+        );
+    }
+    ui.add_space(2.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add(
+                egui::Button::new("Open dashboard")
+                    .min_size(egui::vec2(0.0, 44.0))
+                    .corner_radius(22),
+            )
+            .clicked()
+        {
+            actions.push(Action::OpenUrl(
+                "https://developer.spotify.com/dashboard".into(),
+            ));
+        }
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new("Setup guide").color(palette.secondary))
+                    .frame(false)
+                    .min_size(egui::vec2(44.0, 44.0)),
+            )
+            .clicked()
+        {
+            actions.push(Action::OpenUrl(
+                "https://spotifast.rocks/make-it-even-faster/".into(),
+            ));
+        }
+    });
+}
+
 /// Whether a settings row matches the filter query (case-insensitive).
 /// An empty query matches everything, so the page reads exactly as
 /// before when the search field is empty.
@@ -151,7 +229,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let account_rows = [
         RowText::new(
             "Personal Spotify app",
-            "Use a personal Development Mode app for a separate API quota. The shared app stays active.",
+            "Use your own developer account's API quota. The shared app stays active.",
         ),
         RowText::new(
             "Create an app",
@@ -222,6 +300,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 });
                 ui.add_space(10.0);
             }
+            if account_rows[0].matches(&needle, "Account")
+                || account_rows[1].matches(&needle, "Account")
+            {
+                personal_app_instructions(ui, &palette, &mut app.actions);
+                ui.add_space(10.0);
+            }
             let mut client_id = app.settings.web_client_id.clone().unwrap_or_default();
             filtered_row(ui, &palette, &needle, "Account", &account_rows[0], |ui| {
                 let response = Frame::new()
@@ -251,13 +335,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     let trimmed = client_id.trim().to_string();
                     app.settings.web_client_id = (!trimmed.is_empty()).then_some(trimmed);
                     changed = true;
-                }
-            });
-            filtered_row(ui, &palette, &needle, "Account", &account_rows[1], |ui| {
-                if theme::pill_button(ui, &palette, "Setup guide", false).clicked() {
-                    app.actions.push(Action::OpenUrl(
-                        "https://spotifast.rocks/make-it-even-faster/".into(),
-                    ));
                 }
             });
             if in_use {
