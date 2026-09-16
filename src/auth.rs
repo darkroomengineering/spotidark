@@ -94,8 +94,8 @@ impl Grant {
 
     pub fn personal_web_api(client_id: &str) -> Result<Self> {
         let client_id = client_id.trim();
-        if client_id.is_empty() {
-            bail!("a personal Spotify Client ID is required");
+        if !crate::settings::valid_client_id(client_id) {
+            bail!(crate::settings::CLIENT_ID_HINT);
         }
         Ok(Self {
             client_id: client_id.to_string(),
@@ -556,15 +556,22 @@ mod tests {
         assert_eq!(PLAYBACK_SCOPES, &["streaming"]);
         let playback = Grant::playback();
         assert_eq!(playback.scopes, vec!["streaming".to_string()]);
-        let personal = Grant::personal_web_api("test-id").unwrap();
+        let personal = Grant::personal_web_api("0123456789abcdef0123456789abcdef").unwrap();
         let flow = begin(personal);
         assert!(!flow.url.contains("show_dialog=true"));
     }
 
     #[test]
     fn personal_client_id_is_validated_at_the_boundary() {
-        assert_eq!(Grant::personal_web_api("  abc ").unwrap().client_id, "abc");
-        assert!(Grant::personal_web_api("  ").is_err());
+        assert_eq!(
+            Grant::personal_web_api("  0123456789abcdef0123456789abcdef ")
+                .unwrap()
+                .client_id,
+            "0123456789abcdef0123456789abcdef"
+        );
+        for invalid in ["", "  ", "abc", "0123456789ABCDEF0123456789ABCDEF"] {
+            assert!(Grant::personal_web_api(invalid).is_err());
+        }
     }
 
     #[test]

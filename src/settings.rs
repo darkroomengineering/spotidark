@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 /// Local Library identity only. Never sent to Spotify as a context URI.
 pub const LIKED_SONGS_KEY: &str = "fastpotify:liked-songs";
 
+pub const CLIENT_ID_HINT: &str = "A Client ID is 32 lowercase hex characters. Copy it from the app's page on the developer dashboard.";
+
+pub fn valid_client_id(value: &str) -> bool {
+    let value = value.trim();
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LibraryShelf {
@@ -808,6 +818,22 @@ impl ManualProxy {
 #[cfg(test)]
 mod tests {
     use super::Settings;
+
+    #[test]
+    fn personal_client_ids_require_32_lowercase_hex_characters() {
+        for (value, valid) in [
+            ("0123456789abcdef0123456789abcdef", true),
+            ("  0123456789abcdef0123456789abcdef\n", true),
+            ("0123456789ABCDEF0123456789ABCDEF", false),
+            ("0123456789abcdef0123456789abcde", false),
+            ("0123456789abcdef0123456789abcdef0", false),
+            ("0123456789abcdef0123456789abcdeg", false),
+            ("", false),
+            (" \t\n", false),
+        ] {
+            assert_eq!(super::valid_client_id(value), valid, "{value:?}");
+        }
+    }
 
     #[test]
     fn new_profiles_follow_the_system_and_saved_choices_are_preserved() {

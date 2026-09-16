@@ -883,6 +883,12 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     }
                 }
             }
+            "personal-app-invalid" => {
+                app.settings.web_client_id = Some("not-a-valid-client-id".into());
+                app.web_app = None;
+                app.dialog = None;
+                app.open(Page::Settings);
+            }
             // A Spotify app of one's own, in use.
             "faster" => {
                 let id = "8f2c1d0e4a6b4c3d9e7f5a1b2c3d4e5f".to_string();
@@ -2085,6 +2091,114 @@ mod tests {
             .into_iter()
             .map(|(text, _)| text)
             .collect()
+    }
+
+    #[test]
+    fn invalid_personal_app_demo_shows_the_hint_and_blocks_authorization() {
+        use egui::accesskit::{Action as AccessibleAction, Role};
+        let (ctx, mut app) = accessible_app("personal-client-invalid");
+        #[cfg(feature = "demo")]
+        apply_flags(&mut app, None, Some("personal-app-invalid"));
+        #[cfg(not(feature = "demo"))]
+        {
+            app.settings.web_client_id = Some("not-a-valid-client-id".into());
+            app.web_app = None;
+            app.open(Page::Settings);
+        }
+        assert_eq!(app.page(), &Page::Settings);
+        assert_eq!(
+            app.settings.web_client_id.as_deref(),
+            Some("not-a-valid-client-id")
+        );
+        let text = settings_text(&ctx, &mut app, "personal");
+        assert!(
+            text.iter()
+                .any(|text| text == crate::settings::CLIENT_ID_HINT)
+        );
+        accessible_frame(&ctx, &mut app, vec![]);
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        accessible_node(&tree, "Client ID", Role::TextInput);
+        let button = accessible_node(&tree, "Authorize", Role::Button);
+        assert!(
+            tree.nodes
+                .iter()
+                .find(|(id, _)| *id == button)
+                .unwrap()
+                .1
+                .is_disabled()
+        );
+        accessible_frame(
+            &ctx,
+            &mut app,
+            vec![accessible_action(button, AccessibleAction::Click, None)],
+        );
+        assert!(app.web_app.is_none());
+        assert_eq!(
+            app.settings.web_client_id.as_deref(),
+            Some("not-a-valid-client-id")
+        );
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn personal_client_field_trims_paste_and_enables_authorize_in_the_edit_frame() {
+        use egui::accesskit::{Action as AccessibleAction, Role};
+        let (ctx, mut app) = accessible_app("personal-client-paste");
+        app.open(Page::Settings);
+        app.settings.web_client_id = None;
+        app.web_app = None;
+        assert!(
+            !settings_text(&ctx, &mut app, "personal")
+                .iter()
+                .any(|text| text == crate::settings::CLIENT_ID_HINT)
+        );
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("settings-filter"), "personal".to_string())
+        });
+        accessible_frame(&ctx, &mut app, vec![]);
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        let button = accessible_node(&tree, "Authorize", Role::Button);
+        assert!(
+            tree.nodes
+                .iter()
+                .find(|(id, _)| *id == button)
+                .unwrap()
+                .1
+                .is_disabled()
+        );
+        let field = accessible_node(&tree, "Client ID", Role::TextInput);
+        accessible_frame(
+            &ctx,
+            &mut app,
+            vec![accessible_action(field, AccessibleAction::Focus, None)],
+        );
+        let tree = accessible_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Paste(
+                "  0123456789abcdef0123456789abcdef  ".into(),
+            )],
+        );
+        let button = accessible_node(&tree, "Authorize", Role::Button);
+        assert!(
+            !tree
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == button)
+                .unwrap()
+                .1
+                .is_disabled()
+        );
+        assert_eq!(
+            app.settings.web_client_id.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert!(
+            !settings_text(&ctx, &mut app, "personal")
+                .iter()
+                .any(|text| text == crate::settings::CLIENT_ID_HINT)
+        );
+        app.backend.shutdown();
     }
 
     #[test]

@@ -2127,6 +2127,14 @@ impl Worker {
     }
 
     fn configure_personal_web_app(&mut self, client_id: Option<String>) {
+        if client_id
+            .as_deref()
+            .is_some_and(|value| !crate::settings::valid_client_id(value))
+        {
+            self.emit(Event::Error(crate::settings::CLIENT_ID_HINT.into()));
+            return;
+        }
+        let client_id = client_id.map(|value| value.trim().to_string());
         let authorization_in_flight = if let Some(cancel) = self.cancel_signin.as_ref() {
             let _ = cancel.send(true);
             self.credentials.invalidate(
@@ -4238,6 +4246,56 @@ mod authorization_tests {
             Waker::default(),
         );
         (runtime, worker, events)
+    }
+
+    #[test]
+    fn invalid_personal_client_id_preserves_the_existing_grant_and_authorization() {
+        let (runtime, mut worker, events) = worker("invalid-personal-client");
+        let client_id = "0123456789abcdef0123456789abcdef";
+        worker.web_client_id = Some(client_id.into());
+        let token = crate::auth::StoredToken {
+            client_id: client_id.into(),
+            access_token: "dummy-access".into(),
+            refresh_token: "dummy-refresh".into(),
+            ..Default::default()
+        };
+        let lease = worker.credentials.lease(CredentialSlot::Personal);
+        runtime
+            .block_on(lease.save(StoredGrant::Web(token.clone())))
+            .unwrap();
+        let tokens = WebTokens::new(
+            worker.http.clone(),
+            token.clone(),
+            lease.clone(),
+            ApiSource::Personal,
+            Arc::new(|_| {}),
+        );
+        worker.web_tokens[CredentialSlot::Personal.index()] = Some(tokens.clone());
+        let (cancel, cancelled) = watch::channel(false);
+        worker.cancel_signin = Some(cancel);
+        worker.authorizing_source = Some(ApiSource::Personal);
+        for invalid in [
+            "not-a-valid-client-id",
+            "",
+            "0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            worker.configure_personal_web_app(Some(invalid.into()));
+            assert_eq!(worker.web_client_id.as_deref(), Some(client_id));
+            assert!(lease.current());
+            assert!(!*cancelled.borrow());
+            assert!(Arc::ptr_eq(
+                worker.web_tokens[CredentialSlot::Personal.index()]
+                    .as_ref()
+                    .unwrap(),
+                &tokens
+            ));
+            assert!(matches!(runtime.block_on(lease.load()).unwrap().grant,
+                Some(StoredGrant::Web(saved)) if saved == token));
+            assert!(
+                matches!(events.try_recv().unwrap(), Event::Error(message) if message == crate::settings::CLIENT_ID_HINT)
+            );
+            assert!(events.try_recv().is_err());
+        }
     }
 
     #[test]

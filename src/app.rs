@@ -7344,7 +7344,26 @@ impl App {
                 self.sign_in_url = None;
                 self.auth = AuthStatus::SignedOut;
             }
+            Action::SetPersonalWebClientId(value) => {
+                let value = value.trim();
+                self.settings.web_client_id = (!value.is_empty()).then(|| value.to_string());
+                self.settings_dirty = true;
+            }
             Action::ConfigurePersonalWebApp => {
+                if self
+                    .settings
+                    .web_client_id
+                    .as_deref()
+                    .is_some_and(|value| !crate::settings::valid_client_id(value))
+                {
+                    self.toast_error(crate::settings::CLIENT_ID_HINT);
+                    return;
+                }
+                self.settings.web_client_id = self
+                    .settings
+                    .web_client_id
+                    .as_deref()
+                    .map(|value| value.trim().to_string());
                 self.save_settings();
                 self.backend.send(Command::ConfigurePersonalWebApp(
                     self.settings.web_client_id.clone(),
@@ -8758,6 +8777,42 @@ fn cover_error(error: &crate::api::client::ApiError) -> String {
 mod tests {
     use super::*;
     use crate::api::models::Image;
+
+    #[test]
+    fn personal_client_edits_trim_and_invalid_authorization_stops_before_saving() {
+        let mut app = headless_app();
+        let ctx = egui::Context::default();
+        app.web_app = Some("0123456789abcdef0123456789abcdef".into());
+        app.apply(
+            Action::SetPersonalWebClientId("  invalid-id \n".into()),
+            &ctx,
+        );
+        assert_eq!(app.settings.web_client_id.as_deref(), Some("invalid-id"));
+        app.apply(Action::ConfigurePersonalWebApp, &ctx);
+        assert!(
+            app.settings_dirty,
+            "invalid authorization must not save or submit settings"
+        );
+        assert_eq!(
+            app.web_app.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(
+            app.toasts.last().unwrap().message,
+            crate::settings::CLIENT_ID_HINT
+        );
+        app.apply(
+            Action::SetPersonalWebClientId("  0123456789abcdef0123456789abcdef \n".into()),
+            &ctx,
+        );
+        assert_eq!(
+            app.settings.web_client_id.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        app.apply(Action::SetPersonalWebClientId(" \t".into()), &ctx);
+        assert_eq!(app.settings.web_client_id, None);
+        app.backend.shutdown();
+    }
 
     #[test]
     fn middle_clicking_a_playlist_row_autoscrolls_only_on_windows_without_playing_it() {

@@ -244,7 +244,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             "Authorize your personal app",
             "Spotify opens in your browser to verify the account.",
         )
-        .when(!in_use && wanted.is_some()),
+        .when(!in_use),
         RowText::new("Remove personal app", "Shared access remains signed in.")
             .when(!in_use && wanted.is_none() && app.web_app.is_some()),
         RowText::new("Sign out", "Account"),
@@ -324,6 +324,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         )
                     })
                     .inner;
+                response.widget_info(|| {
+                    let mut info = egui::WidgetInfo::text_edit(
+                        ui.is_enabled(),
+                        app.settings.web_client_id.as_deref().unwrap_or_default(),
+                        &client_id,
+                        "Client ID",
+                    );
+                    info.label = Some("Client ID".into());
+                    info
+                });
                 if ui
                     .data_mut(|data| data.remove_temp::<bool>(egui::Id::new(PERSONAL_APP_FOCUS_ID)))
                     .unwrap_or(false)
@@ -332,27 +342,65 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     response.request_focus();
                 }
                 if response.changed() {
-                    let trimmed = client_id.trim().to_string();
-                    app.settings.web_client_id = (!trimmed.is_empty()).then_some(trimmed);
-                    changed = true;
+                    app.actions
+                        .push(Action::SetPersonalWebClientId(client_id.clone()));
                 }
             });
+            let valid = crate::settings::valid_client_id(&client_id);
+            if !valid && !client_id.trim().is_empty() && account_rows[0].matches(&needle, "Account")
+            {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(crate::settings::CLIENT_ID_HINT)
+                            .font(theme::regular(13.0))
+                            .color(palette.secondary),
+                    )
+                    .wrap(),
+                );
+            }
             if in_use {
                 filtered_row(ui, &palette, &needle, "Account", &account_rows[2], |ui| {
-                    if theme::pill_button(ui, &palette, "Remove", false).clicked() {
-                        app.settings.web_client_id = None;
+                    if ui
+                        .add(
+                            egui::Button::new("Remove")
+                                .min_size(egui::vec2(0.0, 44.0))
+                                .corner_radius(22),
+                        )
+                        .clicked()
+                    {
+                        app.actions
+                            .push(Action::SetPersonalWebClientId(String::new()));
                         app.actions.push(Action::ConfigurePersonalWebApp);
                     }
                 });
-            } else if wanted.is_some() {
+            } else {
                 filtered_row(ui, &palette, &needle, "Account", &account_rows[3], |ui| {
-                    if theme::pill_button(ui, &palette, "Authorize", true).clicked() {
+                    if ui
+                        .add_enabled(
+                            valid,
+                            egui::Button::new(
+                                egui::RichText::new("Authorize").color(palette.on_accent),
+                            )
+                            .fill(palette.accent)
+                            .min_size(egui::vec2(0.0, 44.0))
+                            .corner_radius(22),
+                        )
+                        .clicked()
+                    {
                         app.actions.push(Action::ConfigurePersonalWebApp);
                     }
                 });
-            } else if app.web_app.is_some() {
+            }
+            if !in_use && wanted.is_none() && app.web_app.is_some() {
                 filtered_row(ui, &palette, &needle, "Account", &account_rows[4], |ui| {
-                    if theme::pill_button(ui, &palette, "Remove", false).clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new("Remove")
+                                .min_size(egui::vec2(0.0, 44.0))
+                                .corner_radius(22),
+                        )
+                        .clicked()
+                    {
                         app.actions.push(Action::ConfigurePersonalWebApp);
                     }
                 });

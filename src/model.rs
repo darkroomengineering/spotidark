@@ -983,6 +983,7 @@ pub enum Action {
     SignOut,
     /// Add, replace, or remove the optional personal Web API app.
     ConfigurePersonalWebApp,
+    SetPersonalWebClientId(String),
     OpenPersonalAppSetup,
     CopyPersonalAppRedirect,
     ToggleSidebar,
