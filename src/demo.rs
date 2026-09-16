@@ -1745,7 +1745,7 @@ mod tests {
                 accessible_frame(&ctx, &mut app, vec![]);
                 let tree = accessible_frame(&ctx, &mut app, vec![]);
                 let button = accessible_node(&tree, label, Role::Button);
-                let output = ctx.run_ui(
+                let mut output = ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -1756,6 +1756,7 @@ mod tests {
                     },
                     |ui| app.frame_ui(ui),
                 );
+                output.textures_delta.clear();
                 assert!(
                     output
                         .platform_output
