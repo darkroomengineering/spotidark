@@ -276,9 +276,13 @@ settings.
 `--demo-page` opens a page, such as `home`, `playlist:pl1`, or `artist:art0`,
 and `--demo-show` adds surfaces on top of it: a comma separated list of
 `queue`, `playing-next`, `devices`, `shortcuts`, `premium`, `create`, `duplicate`, `light`,
-`focus`, `winamp`, `playlist`, `eq`, `eq-shade`, `compact`, `update`, and `personal-app`.
+`focus`, `winamp`, `playlist`, `eq`, `eq-shade`, `compact`, `update`, `personal-app`,
+and `personal-app-invalid`.
 `update` shows a sample update badge for checking its layout.
 `personal-app` shows the personal Spotify app introduction.
+`personal-app-invalid` opens Settings with an invalid Client ID, its inline hint,
+and a disabled Authorize button. Use it with both themes and window sizes when
+reviewing the [personal app setup flow](../spotify-app.md).
 
 `--demo-shot <PATH>` writes the window to a PNG and exits, which is useful for
 making deterministic screenshots for these pages:

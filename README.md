@@ -88,6 +88,14 @@ There is no Spotidark binary release yet. The inherited publishing workflows
 are gated off in this fork because their package identities and destinations
 still describe Spotifast. Build from source until fork packages are published.
 
+## Personal Spotify app
+
+Follow the [personal Spotify app guide](docs/spotify-app.md) to create your own
+app and connect it in Settings. The app includes all five setup steps, a button
+to copy the exact redirect URI, and Client ID validation before authorization.
+Each developer needs an app under their own developer account: Development Mode
+allows 5 allow-listed users, and quota is counted per developer account.
+
 ## Development and upstream updates
 
 ```sh

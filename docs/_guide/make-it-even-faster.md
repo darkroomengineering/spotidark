@@ -48,8 +48,9 @@ through its music connection instead.
 1. Open the [Spotify developer dashboard](https://developer.spotify.com/dashboard)
    and sign in with your Spotify account. Spotify asks that it be a
    Premium account.
-2. Click **Create app**. Any name and description will do; nobody else
-   sees them.
+2. Click **Create app**. Choose a name that does not start with "Spot", such
+   as **Darkroom Desktop Player**, and add a description. Spotify rejects names
+   starting with "Spot", including "Spotidark".
 3. Under **Redirect URIs**, add exactly:
 
    ```
@@ -58,6 +59,10 @@ through its music connection instead.
 
 4. Tick **Web API**, accept the terms, and save.
 5. The app's page shows its **Client ID**. Copy it.
+
+Development Mode apps are limited to 5 allow-listed users. Quota is counted per
+developer account, so each developer needs their own app under their own account.
+Do not share one Client ID to try to give several developers separate quotas.
 
 ![Settings, with a personal Spotify app in use](/assets/images/make-it-even-faster.png)
 
@@ -68,6 +73,11 @@ through its music connection instead.
 2. Click **Authorize**. Your browser opens Spotify's sign-in for your app.
    Spotifast verifies that it belongs to the same Spotify account, then shows
    **Personal app ready**.
+
+The Client ID must contain exactly 32 lowercase hex characters (`0-9` and `a-f`).
+Spotidark trims surrounding whitespace and disables **Authorize** for invalid
+input. Its Settings and introduction dialog include the setup steps and a button
+to copy the exact redirect URI.
 
 Your playback setup stays the same. Select **Remove** to stop using your
 personal connection and return to shared access.
