@@ -11,20 +11,31 @@ binaries, checksum files, or appcasts. Linux users can build from source.
 
 ## Automatic delivery
 
-A successful CI run for the current `main` commit triggers the release workflow.
-It builds that exact commit, checks that it is still current before publication,
-and publishes only after both platform builds succeed. Each release has its own
-version and tag; update downloads refer to that tag, so later releases cannot
-replace bytes while an older download is in progress. Installers upload to a
-draft first. Their GitHub sizes and digests must match the local files, and
-main must still identify the tested commit, before the draft becomes public.
-Failed publication leaves the draft private for inspection. A new successful
-CI run creates a new version; retries never overwrite an existing release.
+Every push to `main` runs CI. After quality, all platform tests, Nix, and docs
+pass, CI directly calls the release workflow to build and publish both installers.
+It builds that exact commit and checks that it is still current before
+publication. Failed or superseded builds cannot replace the current release.
+
+Releases roll forward: the new release is published and verified before older
+published version releases are removed. Tags remain as source-history references.
+Drafts and unrelated releases are preserved. Download the current installers
+from [the latest release](https://github.com/darkroomengineering/spotidark/releases/latest).
+Each build retains its own increasing version and tag, which the existing OTA
+client understands. An older download can fail when its release is removed;
+checking for updates again selects the new version. Asset bytes are never
+replaced under the same version.
+
+Installers upload to a draft first. Their GitHub sizes and digests must match
+the local files, and main must still identify the tested commit, before the
+draft becomes public. Failed publication leaves the draft private for inspection
+and preserves the previous public release. If removal of older releases fails,
+the job reports the error and retains the new valid release.
 
 Release versions retain the source major and minor version and use an increasing
-patch number derived from the release workflow run. The build stamps the version
+patch number derived from the CI workflow run. The build stamps the version
 into its temporary Cargo manifest and lockfile without modifying the source
-branch. Manual workflow dispatch builds review artifacts without publishing.
+branch. Manually running **CI** on main follows the same checks and publication
+path. Manually running **Release desktop apps** builds review artifacts only.
 
 The installed app checks on startup and once an hour. Background downloads are on
 by default; explicit saved opt-outs are preserved. **Restart to update** applies
@@ -52,9 +63,14 @@ DMG/EXE installer updates. Rebuild or use the corresponding package manager.
 
 ## Signing configuration
 
-Public macOS releases must be Developer ID signed, notarized, and stapled. The
-app and its DMG are checked before publication. Configure these GitHub Actions
-secrets using the same Apple account and Developer ID as Programa:
+Apple signing setup is currently deferred. Releases without complete signing
+credentials use an ad-hoc signature and are not notarized; macOS may block their
+first launch. Release notes state the signing mode. Windows installers are not
+Authenticode signed.
+
+To enable Developer ID signing, notarization, and stapling for both the app and
+DMG, configure these GitHub Actions secrets using the same Apple account and
+Developer ID as Programa:
 
 - `APPLE_CERTIFICATE_BASE64`
 - `APPLE_CERTIFICATE_PASSWORD`
@@ -64,9 +80,9 @@ secrets using the same Apple account and Developer ID as Programa:
 - `APPLE_TEAM_ID`
 
 Keep their values in the secret store, never the repository. Spotidark does not
-need Programa's Sparkle key or CloudKit provisioning profile. Missing signing
-credentials must prevent a public release; build-only artifacts are not proof
-of a signed, notarized release.
+need Programa's Sparkle key or CloudKit provisioning profile. Once complete
+credentials are present, signing or notarization errors stop publication; they
+never fall back to publishing an ad-hoc build.
 
 The inherited Homebrew, AUR, Flatpak, and native Linux packaging configuration
 remains upstream reference material and is not part of Spotidark publication.

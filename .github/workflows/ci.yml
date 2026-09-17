@@ -170,3 +170,19 @@ jobs:
           JEKYLL_ENV: production
         run: |
           bundle exec jekyll build --destination "$RUNNER_TEMP/fastpotify-site"
+
+  release:
+    name: continuous release
+    if: >-
+      github.repository == 'darkroomengineering/spotidark' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [quality, test, nix, docs]
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      publish: true
+      release_run_number: ${{ github.run_number }}
+    secrets: inherit

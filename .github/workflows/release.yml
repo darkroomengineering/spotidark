@@ -1,12 +1,18 @@
 name: Release desktop apps
 
-# Every successful push CI run on current main publishes one immutable release.
-# Manual runs build the same two installers for review but never publish them.
+# CI calls this after every successful main build. A direct manual run builds
+# the same two installers for review but never publishes them.
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        required: false
+        default: false
+      release_run_number:
+        type: number
+        required: false
+        default: 0
   workflow_dispatch:
 
 permissions:
@@ -14,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: spotidark-release-${{ github.event_name == 'workflow_run' && 'publication' || github.run_id }}
+  group: ${{ inputs.publish && 'spotidark-release-publication' || format('spotidark-release-build-{0}', github.run_id) }}
   cancel-in-progress: false
 
 env:
@@ -25,14 +31,8 @@ jobs:
     name: Validate release identity
     if: >-
       github.repository == 'darkroomengineering/spotidark' &&
-      ((github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      (github.event.workflow_run.event == 'push' ||
-      github.event.workflow_run.event == 'workflow_dispatch') &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.repository.full_name == github.repository &&
-      github.event.workflow_run.head_repository.full_name == github.repository) ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+      github.ref == 'refs/heads/main' &&
+      (!inputs.publish || github.workflow == 'CI')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -41,26 +41,16 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      - name: Resolve tested revision
-        id: revision
-        env:
-          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
-            echo "sha=$TESTED_SHA" >> "$GITHUB_OUTPUT"
-          else
-            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/checkout@v7
         with:
-          ref: ${{ steps.revision.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Verify CI provenance and current main
+      - name: Verify caller and current main
         uses: actions/github-script@v7
         env:
-          TARGET_SHA: ${{ steps.revision.outputs.sha }}
+          PUBLISH: ${{ inputs.publish }}
+          TARGET_SHA: ${{ github.sha }}
         with:
           script: |
             const target = process.env.TARGET_SHA;
@@ -69,32 +59,13 @@ jobs:
               return;
             }
 
-            if (context.eventName === 'workflow_run') {
-              const upstream = context.payload.workflow_run;
-              const run = await github.rest.actions.getWorkflowRun({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: upstream.id,
-              });
-              const workflow = await github.rest.actions.getWorkflow({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: upstream.workflow_id,
-              });
-              if (run.data.conclusion !== 'success' ||
-                  !['push', 'workflow_dispatch'].includes(run.data.event) ||
-                  run.data.head_branch !== 'main' || run.data.head_sha !== target ||
-                  workflow.data.name !== 'CI' || workflow.data.path !== '.github/workflows/ci.yml') {
-                core.setFailed('The upstream run is not successful push CI for this exact main commit.');
-                return;
-              }
-              if (run.data.repository.full_name !== `${context.repo.owner}/${context.repo.repo}` ||
-                  run.data.head_repository.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
-                core.setFailed('The upstream CI run does not belong to this repository.');
-                return;
-              }
-            } else if (context.ref !== 'refs/heads/main') {
-              core.setFailed('Manual release builds must run from main.');
+            if (context.ref !== 'refs/heads/main') {
+              core.setFailed('Release builds must run from main.');
+              return;
+            }
+            if (process.env.PUBLISH === 'true' &&
+                !['push', 'workflow_dispatch'].includes(context.eventName)) {
+              core.setFailed('Only the main CI push or manual CI build may publish.');
               return;
             }
 
@@ -110,14 +81,16 @@ jobs:
       - name: Derive release version
         id: release
         env:
-          TARGET_SHA: ${{ steps.revision.outputs.sha }}
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_RUN_NUMBER: ${{ inputs.release_run_number || github.run_number }}
+          TARGET_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          version="$(python3 packaging/release.py version "$GITHUB_RUN_NUMBER")"
+          version="$(python3 packaging/release.py version "$RELEASE_RUN_NUMBER")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+          if [ "$PUBLISH" = true ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
@@ -129,10 +102,11 @@ jobs:
     needs: identity
     runs-on: macos-latest
     timeout-minutes: 90
+    outputs:
+      signing_mode: ${{ steps.signing.outputs.mode }}
     env:
       CMAKE_GENERATOR: Ninja
       VERSION: ${{ needs.identity.outputs.version }}
-      AUTO_PUBLISH: ${{ needs.identity.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -168,14 +142,9 @@ jobs:
           done
           if [ "$complete" = true ]; then
             echo 'mode=developer-id' >> "$GITHUB_OUTPUT"
-            echo 'artifact_name=spotidark-macos' >> "$GITHUB_OUTPUT"
-          elif [ "$AUTO_PUBLISH" = true ]; then
-            echo 'All six Apple signing and notarization secrets are required for publication.' >&2
-            exit 1
           else
             echo 'mode=ad-hoc' >> "$GITHUB_OUTPUT"
-            echo 'artifact_name=spotidark-macos-ad-hoc-dry-run' >> "$GITHUB_OUTPUT"
-            echo '::notice::Apple credentials are incomplete. This build-only DMG is ad-hoc signed and cannot be published.'
+            echo '::warning::Apple credentials are missing or incomplete. The macOS DMG will be public, ad-hoc signed, and not notarized.'
           fi
 
       - name: Import signing certificate
@@ -285,7 +254,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.signing.outputs.artifact_name }}
+          name: spotidark-macos
           path: dist/spotidark-macos.dmg
           if-no-files-found: error
 
@@ -366,6 +335,7 @@ jobs:
       RELEASE_SHA: ${{ needs.identity.outputs.sha }}
       RELEASE_TAG: ${{ needs.identity.outputs.tag }}
       RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+      MACOS_SIGNING_MODE: ${{ needs.macos.outputs.signing_mode }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -455,6 +425,12 @@ jobs:
             echo
             echo "Built from commit $RELEASE_SHA after its successful main-branch CI run."
             echo
+            if [ "$MACOS_SIGNING_MODE" = developer-id ]; then
+              echo "The macOS DMG is Developer ID signed, notarized, and stapled."
+            else
+              echo "The macOS DMG is ad-hoc signed and not notarized. Apple Developer signing is pending."
+            fi
+            echo
             echo "Spotidark is based on Spotifast by Carmine Paolino and contributors. The original MIT license and upstream credits are included in both installers."
           } > "$RUNNER_TEMP/release-notes.md"
           gh release create "$RELEASE_TAG" \
@@ -537,8 +513,81 @@ jobs:
               release_id: release.data.id, draft: false, make_latest: 'true',
             });
 
-      - name: Verify published tag
-        run: |
-          set -euo pipefail
-          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)"
-          test "$tag_sha" = "$RELEASE_SHA"
+      - name: Verify published tag, latest release, and prune prior Spotidark versions
+        uses: actions/github-script@v7
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.sha }}
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+        with:
+          script: |
+            const current = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: process.env.RELEASE_TAG,
+            });
+            if (current.data.draft || current.data.prerelease) {
+              throw new Error('The new Spotidark release is not public and stable.');
+            }
+            const tag = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `tags/${process.env.RELEASE_TAG}`,
+            });
+            if (tag.data.object.sha !== process.env.RELEASE_SHA) {
+              throw new Error('The new release tag does not identify the tested commit.');
+            }
+
+            let latest;
+            for (let attempt = 0; attempt < 5; attempt += 1) {
+              latest = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              if (latest.data.id === current.data.id) break;
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            if (latest.data.id !== current.data.id) {
+              throw new Error('The new release did not become /releases/latest. Prior releases were retained.');
+            }
+
+            const canonical = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+            if (!canonical.test(current.data.tag_name)) {
+              throw new Error('The current Spotidark release tag is not canonical.');
+            }
+            const version = tag => tag.slice(1).split('.').map(part => BigInt(part));
+            const currentVersion = version(current.data.tag_name);
+            const olderThanCurrent = tag => {
+              const candidate = version(tag);
+              for (let index = 0; index < currentVersion.length; index += 1) {
+                if (candidate[index] < currentVersion[index]) return true;
+                if (candidate[index] > currentVersion[index]) return false;
+              }
+              return false;
+            };
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            for (const release of releases) {
+              if (release.id === current.data.id || release.draft || release.prerelease ||
+                  !canonical.test(release.tag_name) ||
+                  !olderThanCurrent(release.tag_name) ||
+                  release.name !== `Spotidark ${release.tag_name.slice(1)}`) {
+                continue;
+              }
+              core.info(`Deleting prior Spotidark release ${release.tag_name}; its tag is retained.`);
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+              });
+            }
+
+            const confirmed = await github.rest.repos.getLatestRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            if (confirmed.data.id !== current.data.id) {
+              throw new Error('The current Spotidark release is no longer /releases/latest.');
+            }

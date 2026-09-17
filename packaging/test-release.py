@@ -188,6 +188,102 @@ let error = null;
                 self.assertIn(message, rejected["error"])
                 self.assertEqual(rejected["updates"], [])
 
+    def _run_prune(self, scenario):
+        step = WORKFLOW.split(
+            "- name: Verify published tag, latest release, and prune prior Spotidark versions",
+            1,
+        )[1]
+        script = textwrap.dedent(step.split("script: |\n", 1)[1])
+        harness = """
+const deleted = [];
+const messages = [];
+const sha = process.env.RELEASE_SHA;
+const current = {
+  id: 20,
+  tag_name: 'v0.8.10',
+  name: 'Spotidark 0.8.10',
+  draft: process.env.SCENARIO === 'current-draft',
+  prerelease: false,
+};
+const releases = [
+  current,
+  {id: 1, tag_name: 'v0.8.9', name: 'Spotidark 0.8.9'},
+  {id: 2, tag_name: 'v0.7.99', name: 'Spotidark 0.7.99'},
+  {id: 3, tag_name: 'v0.8.10', name: 'Spotidark 0.8.10'},
+  {id: 4, tag_name: 'v0.8.11', name: 'Spotidark 0.8.11'},
+  {id: 5, tag_name: 'v0.8.8', name: 'Spotidark 0.8.8', draft: true},
+  {id: 6, tag_name: 'v0.8.7', name: 'Spotidark 0.8.7', prerelease: true},
+  {id: 7, tag_name: 'v0.8.6', name: 'Another app 0.8.6'},
+  {id: 8, tag_name: 'v0.8.09', name: 'Spotidark 0.8.09'},
+  {id: 9, tag_name: 'rolling', name: 'Spotidark rolling'},
+];
+const latest = () => ({data: process.env.SCENARIO === 'wrong-latest'
+  ? {id: 99, tag_name: 'v0.8.11'} : current});
+const github = {
+  rest: {
+    repos: {
+      getReleaseByTag: async () => ({data: current}),
+      getLatestRelease: async () => latest(),
+      listReleases: async () => ({data: releases}),
+      deleteRelease: async ({release_id}) => {
+        if (process.env.SCENARIO === 'delete-failure') throw new Error('delete denied');
+        deleted.push(release_id);
+      },
+    },
+    git: {getRef: async () => ({data: {object: {sha:
+      process.env.SCENARIO === 'wrong-tag' ? 'f'.repeat(40) : sha}}})},
+  },
+  paginate: async () => releases,
+};
+const context = {repo: {owner: 'darkroomengineering', repo: 'spotidark'}};
+const core = {info: message => messages.push(message)};
+const setTimeout = resolve => resolve();
+let error = null;
+(async () => {
+""" + script + """
+})().catch(reason => { error = reason.message; }).finally(() => {
+  console.log(JSON.stringify({deleted, error, messages}));
+});
+"""
+        environment = os.environ | {
+            "RELEASE_SHA": "a" * 40,
+            "RELEASE_TAG": "v0.8.10",
+            "SCENARIO": scenario,
+        }
+        result = subprocess.run(
+            ["node", "-e", harness],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return json.loads(result.stdout)
+
+    def test_prune_deletes_only_older_canonical_spotidark_releases(self):
+        result = self._run_prune("valid")
+
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["deleted"], [1, 2])
+        self.assertEqual(len(result["messages"]), 2)
+
+    def test_prune_retains_history_until_the_current_release_is_verified(self):
+        for scenario, message in [
+            ("current-draft", "not public and stable"),
+            ("wrong-tag", "does not identify the tested commit"),
+            ("wrong-latest", "did not become /releases/latest"),
+        ]:
+            with self.subTest(scenario=scenario):
+                result = self._run_prune(scenario)
+                self.assertIn(message, result["error"])
+                self.assertEqual(result["deleted"], [])
+
+    def test_prune_surfaces_release_deletion_failures(self):
+        result = self._run_prune("delete-failure")
+
+        self.assertEqual(result["error"], "delete denied")
+        self.assertEqual(result["deleted"], [])
+
     def test_windows_installer_has_a_spotidark_identity_and_matching_marker(self):
         marker = (ROOT / "packaging/windows/spotidark-installer.txt").read_text(
             encoding="utf-8"

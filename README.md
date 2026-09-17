@@ -103,9 +103,12 @@ application directories for the `engineering` / `darkroom` / `spotidark` identit
 
 ## Automatic updates
 
-Every successful CI run for the current `main` commit triggers a release build.
-The release publishes only `spotidark-macos.dmg` and `spotidark-windows.exe`.
-macOS releases require Developer ID signing and Apple notarization.
+Every push to `main` runs CI. Once its checks pass, CI builds and publishes
+`spotidark-macos.dmg` and `spotidark-windows.exe` as the rolling release, then
+removes the previous release. Each build has an increasing version for OTA.
+Apple signing is currently deferred: macOS downloads are ad-hoc signed and
+not notarized. Complete signing credentials enable Developer ID signing and
+Apple notarization automatically.
 
 Installed macOS and Windows builds check for updates and download them in the
 background by default. Choose **Restart to update** when ready; an update never

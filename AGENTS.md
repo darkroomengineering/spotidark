@@ -134,8 +134,8 @@ maintainer approval and an exact force-with-lease guard; keep a recovery ref.
 
 ## Releases
 
-Spotidark automatically builds a release after CI succeeds for the current
-`main` commit. Follow [docs/releases.md](docs/releases.md), not the preserved
+Spotidark automatically builds and publishes a rolling release as the final
+stage of successful CI for current `main`. Follow [docs/releases.md](docs/releases.md), not the preserved
 upstream packaging recipes.
 
 - Build the exact CI-tested commit and recheck current main before publication.
@@ -143,11 +143,14 @@ upstream packaging recipes.
   lockfile. Do not commit CI-generated version changes or alter the source
   package's Nix vendor hash for this temporary build stamp.
 - Publish only `spotidark-macos.dmg` and `spotidark-windows.exe`, under an
-  immutable version tag. GitHub's release asset digests supply updater
+  unique increasing version tag. GitHub's release asset digests supply updater
   checksums; no separate appcast or checksum attachment is required.
-- Require Developer ID signing, notarization, and validation for public macOS
-  releases. Missing credentials must fail publication, never silently publish
-  an ad-hoc build.
+- Publish and verify the replacement before deleting older published version
+  releases. Preserve tags, drafts, and unrelated releases. Never replace asset
+  bytes under a version that an updater may already be downloading.
+- Apple signing setup is deferred by the maintainer. Clearly label ad-hoc,
+  unnotarized macOS releases. Complete credentials enable Developer ID signing
+  and notarization; a failure in that mode must still prevent publication.
 - Manual release workflow dispatch is build-only. Verify both platform builds
   and publication separately before reporting a release shipped.
 - Retain Spotifast's MIT notice and contributor credit. Do not activate the
