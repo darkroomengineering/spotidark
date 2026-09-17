@@ -184,5 +184,4 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       publish: true
-      release_run_number: ${{ github.run_number }}
     secrets: inherit
