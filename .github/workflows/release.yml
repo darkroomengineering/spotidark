@@ -449,11 +449,16 @@ jobs:
             const fs = require('node:fs');
             const crypto = require('node:crypto');
             const { execFileSync } = require('node:child_process');
-            const release = await github.rest.repos.getReleaseByTag({
+            // A new draft has no tag ref yet, so the by-tag endpoint returns 404.
+            const drafts = (await github.paginate(github.rest.repos.listReleases, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag: process.env.RELEASE_TAG,
-            });
+              per_page: 100,
+            })).filter(candidate => candidate.tag_name === process.env.RELEASE_TAG);
+            if (drafts.length !== 1) {
+              throw new Error('Expected exactly one release draft for this version.');
+            }
+            const release = {data: drafts[0]};
             if (!release.data.draft || release.data.target_commitish !== process.env.RELEASE_SHA) {
               throw new Error('Only the draft for this exact tested commit can be published.');
             }

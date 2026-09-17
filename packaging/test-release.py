@@ -134,13 +134,21 @@ const makeAsset = name => {
 };
 const assets = ['spotidark-macos.dmg', 'spotidark-windows.exe'].map(makeAsset);
 if (process.env.SCENARIO === 'wrong-digest') assets[0].digest = `sha256:${'0'.repeat(64)}`;
-const fixture = {data: {id: 7, draft: true, target_commitish: sha, assets}};
+const fixture = {data: {
+  id: 7, tag_name: 'v0.8.2', draft: true, target_commitish: sha, assets,
+}};
+const unrelated = {id: 6, tag_name: 'v0.8.1', draft: true, target_commitish: sha, assets};
+const releases = process.env.SCENARIO === 'missing-draft' ? [unrelated] :
+  process.env.SCENARIO === 'ambiguous-draft' ?
+    [fixture.data, {...fixture.data, id: 8}, unrelated] : [fixture.data, unrelated];
 const github = {rest: {repos: {
-  getReleaseByTag: async () => fixture,
+  getReleaseByTag: async () => { const error = new Error('Not Found'); error.status = 404; throw error; },
+  listReleases: async () => ({data: releases}),
   getLatestRelease: async () => ({data: {tag_name: 'v0.8.1'}}),
   updateRelease: async update => updates.push(update),
 }, git: {getRef: async ({ref}) => ({data: {object: {sha:
-  ref === 'heads/main' && process.env.SCENARIO === 'stale-main' ? 'f'.repeat(40) : sha}}})}}};
+  ref === 'heads/main' && process.env.SCENARIO === 'stale-main' ? 'f'.repeat(40) : sha}}})}},
+paginate: async () => releases};
 const context = {repo: {owner: 'darkroomengineering', repo: 'spotidark'}};
 const core = {setFailed: message => { throw new Error(message); }};
 let error = null;
@@ -186,6 +194,15 @@ let error = null;
             with self.subTest(scenario=scenario):
                 rejected = self._run_publication(scenario)
                 self.assertIn(message, rejected["error"])
+                self.assertEqual(rejected["updates"], [])
+
+        for scenario in ["missing-draft", "ambiguous-draft"]:
+            with self.subTest(scenario=scenario):
+                rejected = self._run_publication(scenario)
+                self.assertEqual(
+                    rejected["error"],
+                    "Expected exactly one release draft for this version.",
+                )
                 self.assertEqual(rejected["updates"], [])
 
     def _run_prune(self, scenario):
