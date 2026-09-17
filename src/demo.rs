@@ -1388,6 +1388,7 @@ mod tests {
         for &locale in Locale::value_variants() {
             let (ctx, mut app) = accessible_app(&format!("translated-lyrics-{locale:?}"));
             app.locale = locale;
+            app.settings.motion = crate::settings::MotionPreference::Full;
             app.show_lyrics_panel = true;
             app.lyrics_uri = app.now_playing().map(|now| now.uri);
             app.lyrics = Loadable::Loaded(Some(sample_lyrics()));

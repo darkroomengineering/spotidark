@@ -9405,16 +9405,28 @@ mod tests {
                     |ui| app.frame_ui(ui),
                 );
                 output.textures_delta.clear();
+                output.shapes
             };
             draw(&mut app, vec![]);
-            draw(&mut app, vec![]);
+            let shapes = draw(&mut app, vec![]);
             let anchor = if skinned {
                 ctx.read_response(egui::Id::new(("playlist-row", 0_usize)))
                     .unwrap()
                     .rect
                     .center()
             } else {
-                egui::pos2(1120.0, 100.0)
+                shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::epaint::Shape::Text(text)
+                            if text.galley.text() == "Autoscroll lyric line 0" =>
+                        {
+                            let bounds = text.visual_bounding_rect().intersect(shape.clip_rect);
+                            bounds.is_positive().then(|| bounds.center())
+                        }
+                        _ => None,
+                    })
+                    .expect("first rendered lyric bounds")
             };
             let press = |button, pressed| egui::Event::PointerButton {
                 pos: anchor,
