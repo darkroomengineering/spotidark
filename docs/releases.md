@@ -97,9 +97,23 @@ Profile Signer role):
 - `AZURE_SIGNING_ACCOUNT`
 - `AZURE_SIGNING_PROFILE`
 
+With those set, the Windows job installs the dotnet/sign CLI and signs through
+`packaging/windows/sign.ps1`: once directly on the built binary, then from
+inside Inno Setup (its `SignTool` hook) so the installer and the uninstaller it
+embeds are signed too. Windows checks all three, and Smart App Control blocks an
+install whose uninstaller is unsigned. The job then installs the result silently
+on the runner and verifies every signature, so a broken signing setup fails the
+build instead of shipping. Without the secrets the job builds unsigned and warns.
+
 Signing removes the "Unknown publisher" warning immediately. SmartScreen may
 still warn on a brand-new build until the certificate accumulates download
 reputation; that clears on its own after a few releases.
+
+To sign locally, install the CLI with
+`dotnet tool install --tool-path .signtool --version 0.9.1-beta.26431.1 sign`,
+export the six variables above plus `SIGN_TOOL_DIR=.signtool`, and pass
+`/DSign "/Sazure=pwsh -NoProfile -File <repo>\packaging\windows\sign.ps1 $f"`
+to the ISCC command shown at the top of `packaging/windows/fastpotify.iss`.
 
 The inherited Homebrew, AUR, Flatpak, and native Linux packaging configuration
 remains upstream reference material and is not part of Spotidark publication.

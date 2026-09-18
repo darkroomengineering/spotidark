@@ -311,21 +311,25 @@ jobs:
       - name: Build Spotidark
         run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin spotidark
 
+      - name: Install Azure Artifact Signing CLI
+        if: steps.signing.outputs.mode == 'authenticode'
+        shell: pwsh
+        # dotnet/sign ships prerelease-tagged versions only; pin one so the
+        # release build does not change under us.
+        run: dotnet tool install --tool-path "$env:GITHUB_WORKSPACE\.signtool" --version 0.9.1-beta.26431.1 sign
+
       - name: Sign Spotidark binary
         if: steps.signing.outputs.mode == 'authenticode'
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
-          files-folder: ${{ github.workspace }}\target\x86_64-pc-windows-msvc\release
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          SIGN_TOOL_DIR: ${{ github.workspace }}\.signtool
+        run: pwsh -File packaging\windows\sign.ps1 target\x86_64-pc-windows-msvc\release\spotidark.exe
 
       - name: Verify standalone Windows runtime
         shell: pwsh
@@ -337,30 +341,30 @@ jobs:
 
       - name: Build installer
         shell: pwsh
+        env:
+          SIGNING_MODE: ${{ steps.signing.outputs.mode }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          SIGN_TOOL_DIR: ${{ github.workspace }}\.signtool
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          # When signing, Inno Setup calls sign.ps1 on the installer, the
+          # embedded uninstaller and the program, so every executable a user
+          # runs carries the same signature (Smart App Control checks all three).
+          $signing = @()
+          if ($env:SIGNING_MODE -eq 'authenticode') {
+            $signing = @('/DSign', "/Sazure=pwsh -NoProfile -File $PWD\packaging\windows\sign.ps1 `$f")
+          }
           & $iscc "/DVersion=$env:VERSION" "/DArch=x86_64" `
             "/DBinary=$PWD\target\x86_64-pc-windows-msvc\release\spotidark.exe" `
-            "/DOutputDir=$PWD\dist" packaging\windows\fastpotify.iss
+            "/DOutputDir=$PWD\dist" @signing packaging\windows\fastpotify.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Sign installer
-        if: steps.signing.outputs.mode == 'authenticode'
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
-          files-folder: ${{ github.workspace }}\dist
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
 
       - name: Verify Authenticode signatures
         if: steps.signing.outputs.mode == 'authenticode'
@@ -369,8 +373,19 @@ jobs:
           foreach ($file in @("target\x86_64-pc-windows-msvc\release\spotidark.exe", "dist\spotidark-windows.exe")) {
             $signature = Get-AuthenticodeSignature $file
             if ($signature.Status -ne 'Valid') { throw "$file signature status: $($signature.Status)" }
+            if (-not $signature.TimeStamperCertificate) { throw "$file is signed but not timestamped" }
             Write-Host "$file signed by $($signature.SignerCertificate.Subject)"
           }
+          # The uninstaller only exists once installed: run the installer
+          # silently on the runner and check what it wrote.
+          $target = "$env:LOCALAPPDATA\Programs\Spotidark"
+          Start-Process -Wait -FilePath "dist\spotidark-windows.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          $uninstaller = Get-ChildItem $target -Filter 'unins*.exe' | Select-Object -First 1
+          if (-not $uninstaller) { throw "no uninstaller found in $target" }
+          $signature = Get-AuthenticodeSignature $uninstaller.FullName
+          if ($signature.Status -ne 'Valid') { throw "uninstaller signature status: $($signature.Status)" }
+          Write-Host "$($uninstaller.Name) signed by $($signature.SignerCertificate.Subject)"
+          Start-Process -Wait -FilePath $uninstaller.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
 
       - name: Verify Windows artifact
         shell: bash

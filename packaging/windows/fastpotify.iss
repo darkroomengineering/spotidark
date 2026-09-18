@@ -27,6 +27,11 @@
   #define InnoArch "x64compatible"
 #endif
 
+; Define Sign on the ISCC command line, together with /Sazure="<command> $f",
+; to Authenticode-sign the installer, its uninstaller and the program with
+; the same tool the release workflow uses (packaging\windows\sign.ps1).
+; Without it the build is unsigned and SmartScreen warns on first launch.
+
 #define AppName "Spotidark"
 #define AppExeName "spotidark.exe"
 #define AppIdentity "Spotidark"
@@ -66,6 +71,10 @@ UninstallDisplayIcon={app}\{#AppExeName}
   #define NumericVersion Version
 #endif
 VersionInfoVersion={#NumericVersion}.0
+#ifdef Sign
+SignTool=azure
+SignedUninstaller=yes
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
