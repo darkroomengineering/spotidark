@@ -285,8 +285,47 @@ jobs:
         with:
           key: spotidark-windows-x64
 
+      - name: Select signing mode
+        id: signing
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
+          set -euo pipefail
+          complete=true
+          for name in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGNING_ENDPOINT AZURE_SIGNING_ACCOUNT AZURE_SIGNING_PROFILE; do
+            if [ -z "${!name}" ]; then complete=false; fi
+          done
+          if [ "$complete" = true ]; then
+            echo 'mode=authenticode' >> "$GITHUB_OUTPUT"
+          else
+            echo 'mode=unsigned' >> "$GITHUB_OUTPUT"
+            echo '::warning::Azure Artifact Signing credentials are missing or incomplete. The Windows installer will not be Authenticode signed and SmartScreen will warn on first launch.'
+          fi
+
       - name: Build Spotidark
         run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin spotidark
+
+      - name: Sign Spotidark binary
+        if: steps.signing.outputs.mode == 'authenticode'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\target\x86_64-pc-windows-msvc\release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
 
       - name: Verify standalone Windows runtime
         shell: pwsh
@@ -306,6 +345,32 @@ jobs:
             "/DBinary=$PWD\target\x86_64-pc-windows-msvc\release\spotidark.exe" `
             "/DOutputDir=$PWD\dist" packaging\windows\fastpotify.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Sign installer
+        if: steps.signing.outputs.mode == 'authenticode'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Verify Authenticode signatures
+        if: steps.signing.outputs.mode == 'authenticode'
+        shell: pwsh
+        run: |
+          foreach ($file in @("target\x86_64-pc-windows-msvc\release\spotidark.exe", "dist\spotidark-windows.exe")) {
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne 'Valid') { throw "$file signature status: $($signature.Status)" }
+            Write-Host "$file signed by $($signature.SignerCertificate.Subject)"
+          }
 
       - name: Verify Windows artifact
         shell: bash
