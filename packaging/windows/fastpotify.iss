@@ -27,7 +27,7 @@
   #define InnoArch "x64compatible"
 #endif
 
-; Define Sign on the ISCC command line, together with /Sazure="<command> $f",
+; Define Sign on the ISCC command line, together with /Sazure="<command> $q$f$q",
 ; to Authenticode-sign the installer, its uninstaller and the program with
 ; the same tool the release workflow uses (packaging\windows\sign.ps1).
 ; Without it the build is unsigned and SmartScreen warns on first launch.

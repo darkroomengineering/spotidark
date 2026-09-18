@@ -112,7 +112,7 @@ reputation; that clears on its own after a few releases.
 To sign locally, install the CLI with
 `dotnet tool install --tool-path .signtool --version 0.9.1-beta.26431.1 sign`,
 export the six variables above plus `SIGN_TOOL_DIR=.signtool`, and pass
-`/DSign "/Sazure=pwsh -NoProfile -File <repo>\packaging\windows\sign.ps1 $f"`
+`/DSign "/Sazure=pwsh -NoProfile -File $q<repo>\packaging\windows\sign.ps1$q $q$f$q"`
 to the ISCC command shown at the top of `packaging/windows/fastpotify.iss`.
 
 The inherited Homebrew, AUR, Flatpak, and native Linux packaging configuration
