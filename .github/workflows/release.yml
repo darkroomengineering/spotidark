@@ -359,7 +359,7 @@ jobs:
           # runs carries the same signature (Smart App Control checks all three).
           $signing = @()
           if ($env:SIGNING_MODE -eq 'authenticode') {
-            $signing = @('/DSign', "/Sazure=pwsh -NoProfile -File `$q$PWD\packaging\windows\sign.ps1`$q `$q`$f`$q")
+            $signing = @('/DSign', "/Sazure=pwsh -NoProfile -File `$q$PWD\packaging\windows\sign.ps1`$q `$f")
           }
           & $iscc "/DVersion=$env:VERSION" "/DArch=x86_64" `
             "/DBinary=$PWD\target\x86_64-pc-windows-msvc\release\spotidark.exe" `

@@ -110,10 +110,12 @@ still warn on a brand-new build until the certificate accumulates download
 reputation; that clears on its own after a few releases.
 
 To sign locally, install the CLI with
-`dotnet tool install --tool-path .signtool --version 0.9.1-beta.26431.1 sign`,
-export the six variables above plus `SIGN_TOOL_DIR=.signtool`, and pass
-`/DSign "/Sazure=pwsh -NoProfile -File $q<repo>\packaging\windows\sign.ps1$q $q$f$q"`
+`dotnet tool install --tool-path C:\tools\sign --version 0.9.1-beta.26431.1 sign`,
+export the six variables above plus `SIGN_TOOL_DIR=C:\tools\sign` (absolute:
+Inno Setup runs the sign tool from its own directory, not the repository), and
+pass `/DSign "/Sazure=pwsh -NoProfile -File $q<repo>\packaging\windows\sign.ps1$q $f"`
 to the ISCC command shown at the top of `packaging/windows/fastpotify.iss`.
+Inno Setup then signs the program, the installer and the uninstaller.
 
 The inherited Homebrew, AUR, Flatpak, and native Linux packaging configuration
 remains upstream reference material and is not part of Spotidark publication.

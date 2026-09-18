@@ -27,7 +27,7 @@
   #define InnoArch "x64compatible"
 #endif
 
-; Define Sign on the ISCC command line, together with /Sazure="<command> $q$f$q",
+; Define Sign on the ISCC command line, together with /Sazure="<command> $f",
 ; to Authenticode-sign the installer, its uninstaller and the program with
 ; the same tool the release workflow uses (packaging\windows\sign.ps1).
 ; Without it the build is unsigned and SmartScreen warns on first launch.
@@ -74,13 +74,17 @@ VersionInfoVersion={#NumericVersion}.0
 #ifdef Sign
 SignTool=azure
 SignedUninstaller=yes
+; signonce leaves a binary the workflow already signed alone.
+#define SignFlags " signonce"
+#else
+#define SignFlags ""
 #endif
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "{#Binary}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Binary}"; DestDir: "{app}"; Flags: ignoreversion{#SignFlags}
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "spotidark-installer.txt"; DestDir: "{app}"; Flags: ignoreversion
