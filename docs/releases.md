@@ -63,10 +63,11 @@ DMG/EXE installer updates. Rebuild or use the corresponding package manager.
 
 ## Signing configuration
 
-Apple signing setup is currently deferred. Releases without complete signing
-credentials use an ad-hoc signature and are not notarized; macOS may block their
-first launch. Release notes state the signing mode. Windows installers are not
-Authenticode signed.
+Releases without complete Apple signing credentials use an ad-hoc signature and
+are not notarized; macOS blocks their first launch until the user allows the app
+in System Settings. Releases without complete Azure Artifact Signing credentials
+are not Authenticode signed; Windows SmartScreen warns on first launch. Release
+notes state the signing mode.
 
 To enable Developer ID signing, notarization, and stapling for both the app and
 DMG, configure these GitHub Actions secrets using the same Apple account and
@@ -83,6 +84,38 @@ Keep their values in the secret store, never the repository. Spotidark does not
 need Programa's Sparkle key or CloudKit provisioning profile. Once complete
 credentials are present, signing or notarization errors stop publication; they
 never fall back to publishing an ad-hoc build.
+
+To Authenticode sign the Windows binary and installer, configure these GitHub
+Actions secrets from an Azure Artifact Signing account (Basic plan, public trust
+certificate profile, App Registration with the Artifact Signing Certificate
+Profile Signer role):
+
+- `AZURE_TENANT_ID`
+- `AZURE_CLIENT_ID`
+- `AZURE_CLIENT_SECRET`
+- `AZURE_SIGNING_ENDPOINT` (for example `https://eus.codesigning.azure.net/`)
+- `AZURE_SIGNING_ACCOUNT`
+- `AZURE_SIGNING_PROFILE`
+
+With those set, the Windows job installs the dotnet/sign CLI and signs through
+`packaging/windows/sign.ps1`: once directly on the built binary, then from
+inside Inno Setup (its `SignTool` hook) so the installer and the uninstaller it
+embeds are signed too. Windows checks all three, and Smart App Control blocks an
+install whose uninstaller is unsigned. The job then installs the result silently
+on the runner and verifies every signature, so a broken signing setup fails the
+build instead of shipping. Without the secrets the job builds unsigned and warns.
+
+Signing removes the "Unknown publisher" warning immediately. SmartScreen may
+still warn on a brand-new build until the certificate accumulates download
+reputation; that clears on its own after a few releases.
+
+To sign locally, install the CLI with
+`dotnet tool install --tool-path C:\tools\sign --version 0.9.1-beta.26431.1 sign`,
+export the six variables above plus `SIGN_TOOL_DIR=C:\tools\sign` (absolute:
+Inno Setup runs the sign tool from its own directory, not the repository), and
+pass `/DSign "/Sazure=pwsh -NoProfile -File $q<repo>\packaging\windows\sign.ps1$q $f"`
+to the ISCC command shown at the top of `packaging/windows/fastpotify.iss`.
+Inno Setup then signs the program, the installer and the uninstaller.
 
 The inherited Homebrew, AUR, Flatpak, and native Linux packaging configuration
 remains upstream reference material and is not part of Spotidark publication.
